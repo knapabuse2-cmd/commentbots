@@ -1,8 +1,8 @@
 """
 Application entry point.
 
-Starts the admin bot (and later the background worker) in a single process.
-Uses asyncio to run them concurrently.
+Starts the admin bot AND the background worker manager concurrently.
+Both run in the same asyncio event loop.
 """
 
 import asyncio
@@ -47,13 +47,22 @@ async def main() -> None:
 
     bot, dp = await start_bot(session_factory)
 
-    log.info("application_ready")
+    # Start worker manager (background task)
+    from src.worker.manager import WorkerManager
+
+    worker_manager = WorkerManager(session_factory, bot)
+    await worker_manager.start()
+
+    log.info("application_ready", workers=worker_manager.get_stats()["running_workers"])
 
     try:
         # Start polling (blocks until stopped)
         # drop_pending_updates=True skips messages sent while bot was offline
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
+        # Graceful shutdown
+        log.info("application_shutting_down")
+        await worker_manager.stop()
         await bot.session.close()
         await close_engine()
         log.info("application_stopped")
