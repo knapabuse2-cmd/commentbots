@@ -33,6 +33,16 @@ class ProxyRepository(BaseRepository[ProxyModel]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def count_by_owner(self, owner_id: uuid.UUID) -> int:
+        """Count proxies for an owner."""
+        from sqlalchemy import func
+
+        stmt = select(func.count()).select_from(ProxyModel).where(
+            ProxyModel.owner_id == owner_id
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
     async def find_by_address(
         self, owner_id: uuid.UUID, host: str, port: int
     ) -> ProxyModel | None:
