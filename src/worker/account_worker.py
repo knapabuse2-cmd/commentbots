@@ -16,6 +16,8 @@ Design principles:
 - Small actions (profile copy steps, join) separated by action_delay (3-5 sec)
 - No rapid loops — sleep between major operations
 - FloodWait is handled gracefully: sleep for the required time + buffer
+- Reconnect on connection loss with exponential backoff
+- Max retry limit on FloodWait to prevent infinite recursion
 - All errors logged with full context
 """
 
@@ -32,6 +34,7 @@ from src.core.exceptions import (
     ChannelAccessDeniedError,
     ChannelCommentsDisabledError,
     ChannelNotFoundError,
+    EncryptionError,
 )
 from src.core.logging import get_logger
 from src.telegram.client import (
@@ -52,6 +55,15 @@ if TYPE_CHECKING:
     from telethon import TelegramClient
 
 log = get_logger(__name__)
+
+# Max consecutive FloodWait retries before giving up
+MAX_FLOOD_RETRIES = 5
+
+# Max reconnection attempts before marking account as errored
+MAX_RECONNECT_ATTEMPTS = 3
+
+# Backoff multiplier for reconnection (seconds)
+RECONNECT_BACKOFF_BASE = 30
 
 
 class AccountWorker:
@@ -94,6 +106,8 @@ class AccountWorker:
         on_comment_posted: Callable[..., Coroutine] | None = None,
         on_error: Callable[..., Coroutine] | None = None,
         on_no_posts: Callable[..., Coroutine] | None = None,
+        on_session_expired: Callable[..., Coroutine] | None = None,
+        on_comment_reposted: Callable[..., Coroutine] | None = None,
         # Connection semaphore (shared across all workers)
         connection_semaphore: asyncio.Semaphore | None = None,
     ):
@@ -123,6 +137,8 @@ class AccountWorker:
         self.on_comment_posted = on_comment_posted
         self.on_error = on_error
         self.on_no_posts = on_no_posts
+        self.on_session_expired = on_session_expired
+        self.on_comment_reposted = on_comment_reposted
 
         self.connection_semaphore = connection_semaphore
 
@@ -133,6 +149,8 @@ class AccountWorker:
         self._current_comment_id: int | None = self.state.get("current_comment_id")
         self._current_post_id: int | None = self.state.get("current_post_id")
         self._profile_copied: bool = self.state.get("profile_copied", False)
+        self._flood_retries: int = 0
+        self._reconnect_attempts: int = 0
 
         # Settings
         settings = get_settings()
@@ -194,10 +212,11 @@ class AccountWorker:
     # ============================================================
 
     async def _run(self) -> None:
-        """Main worker loop."""
+        """Main worker loop with reconnection and error recovery."""
         try:
             # Step 1: Connect
             await self._connect()
+            self._reconnect_attempts = 0  # Reset on successful connect
 
             # Step 2: Join discussion group
             await self._ensure_joined()
@@ -214,19 +233,97 @@ class AccountWorker:
         except asyncio.CancelledError:
             log.debug("account_worker_cancelled", **self._log_ctx)
             raise
+
         except AccountBannedError as e:
             log.warning("account_globally_banned", error=str(e), **self._log_ctx)
-            if self.on_banned:
+            if self.on_session_expired:
+                await self.on_session_expired(
+                    self.account_id, self.channel_id, self.assignment_id,
+                    reason="account_banned_globally",
+                )
+            elif self.on_banned:
                 await self.on_banned(
                     self.account_id, self.channel_id, self.assignment_id,
                     reason="account_banned_globally",
                 )
+
+        except EncryptionError as e:
+            log.error("session_decryption_failed", error=str(e), **self._log_ctx)
+            if self.on_session_expired:
+                await self.on_session_expired(
+                    self.account_id, self.channel_id, self.assignment_id,
+                    reason="session_decryption_failed",
+                )
+
         except AccountFloodWaitError as e:
-            log.warning("account_flood_wait_fatal", seconds=e.seconds, **self._log_ctx)
-            # Sleep through flood wait and retry
-            await self._sleep(e.seconds + 30)
+            self._flood_retries += 1
+            if self._flood_retries > MAX_FLOOD_RETRIES:
+                log.error(
+                    "flood_wait_max_retries_exceeded",
+                    retries=self._flood_retries,
+                    **self._log_ctx,
+                )
+                if self.on_error:
+                    await self.on_error(
+                        self.account_id, self.channel_id, self.assignment_id,
+                        error=f"Max flood retries ({MAX_FLOOD_RETRIES}) exceeded",
+                    )
+                return
+
+            wait_time = e.seconds + random.randint(10, 30)
+            log.warning(
+                "account_flood_wait_retry",
+                seconds=wait_time,
+                retry=self._flood_retries,
+                max_retries=MAX_FLOOD_RETRIES,
+                **self._log_ctx,
+            )
+            await self._sleep(wait_time)
             if self._running:
-                await self._run()  # Recursive retry
+                await self._disconnect()
+                await self._run()
+
+        except (ConnectionError, OSError, TimeoutError) as e:
+            # Network errors — try to reconnect
+            self._reconnect_attempts += 1
+            if self._reconnect_attempts > MAX_RECONNECT_ATTEMPTS:
+                log.error(
+                    "max_reconnect_attempts_exceeded",
+                    attempts=self._reconnect_attempts,
+                    **self._log_ctx,
+                )
+                if self.on_error:
+                    await self.on_error(
+                        self.account_id, self.channel_id, self.assignment_id,
+                        error=f"Max reconnect attempts ({MAX_RECONNECT_ATTEMPTS}) exceeded: {e}",
+                    )
+                return
+
+            backoff = RECONNECT_BACKOFF_BASE * self._reconnect_attempts
+            log.warning(
+                "connection_lost_reconnecting",
+                error=str(e),
+                attempt=self._reconnect_attempts,
+                backoff=backoff,
+                **self._log_ctx,
+            )
+            await self._disconnect()
+            await self._sleep(backoff)
+            if self._running:
+                await self._run()
+
+        except ChannelCommentsDisabledError as e:
+            log.warning("comments_disabled", error=str(e), **self._log_ctx)
+            if self.on_error:
+                await self.on_error(
+                    self.account_id, self.channel_id, self.assignment_id,
+                    error=f"Comments disabled in channel: {self.channel_identifier}",
+                )
+
+        except (ChannelAccessDeniedError, ChannelNotFoundError) as e:
+            # Already handled inside _ensure_joined, but catch stragglers
+            log.warning("channel_error_in_run", error=str(e), **self._log_ctx)
+
         except Exception as e:
             log.error(
                 "account_worker_fatal_error",
@@ -319,6 +416,7 @@ class AccountWorker:
                 if result.success:
                     self._current_comment_id = result.message_id
                     self._current_post_id = post_id
+                    self._flood_retries = 0  # Reset flood counter on success
 
                     if self.on_comment_posted:
                         await self.on_comment_posted(
@@ -368,6 +466,7 @@ class AccountWorker:
                 target_post_id = new_post["id"] if new_post else post_id
 
                 # Delete old comment
+                old_comment_id = self._current_comment_id
                 await self._delete_current_comment()
                 await self._sleep(self.action_delay)
 
@@ -382,6 +481,15 @@ class AccountWorker:
                         )
                     return
 
+                if result.is_channel_error:
+                    log.warning("channel_error_on_repost", error=result.error, **self._log_ctx)
+                    if self.on_error:
+                        await self.on_error(
+                            self.account_id, self.channel_id, self.assignment_id,
+                            error=result.error,
+                        )
+                    return
+
                 if result.should_retry:
                     retry_sec = result.retry_after + random.randint(5, 15)
                     await self._sleep(retry_sec)
@@ -390,18 +498,26 @@ class AccountWorker:
                 if result.success:
                     self._current_comment_id = result.message_id
                     self._current_post_id = target_post_id
+                    self._flood_retries = 0  # Reset flood counter on success
 
-                    if self.on_comment_posted:
-                        await self.on_comment_posted(
+                    if self.on_comment_reposted:
+                        await self.on_comment_reposted(
                             self.account_id, self.channel_id, self.assignment_id,
                             comment_id=result.message_id,
                             post_id=target_post_id,
+                            old_comment_id=old_comment_id,
                         )
 
                     log.info(
                         "comment_reposted",
                         comment_id=result.message_id,
                         post_id=target_post_id,
+                        **self._log_ctx,
+                    )
+                else:
+                    log.warning(
+                        "repost_failed",
+                        error=result.error,
                         **self._log_ctx,
                     )
 
@@ -621,11 +737,18 @@ class AccountWorker:
 
     async def _health_check(self) -> None:
         """
-        Check if our comment still exists.
+        Check if our comment still exists and connection is alive.
 
         If the comment was deleted by channel admins:
-        - Post a new comment immediately
+        - Clear current_comment_id so it gets reposted on next loop iteration.
+
+        Also checks Telethon client connection health.
         """
+        # Check client connection
+        if self.client and not self.client.is_connected():
+            log.warning("client_disconnected_during_health_check", **self._log_ctx)
+            raise ConnectionError("Telethon client disconnected")
+
         if not self._current_comment_id or not self._current_post_id:
             return
 
@@ -659,6 +782,9 @@ class AccountWorker:
         except AccountFloodWaitError as e:
             log.warning("health_check_flood_wait", seconds=e.seconds, **self._log_ctx)
             await self._sleep(e.seconds + 5)
+        except (ConnectionError, OSError, TimeoutError) as e:
+            log.warning("health_check_connection_error", error=str(e), **self._log_ctx)
+            raise  # Propagate to _run() for reconnection
 
     # ============================================================
     # Helpers
@@ -674,11 +800,18 @@ class AccountWorker:
             self._running = False
             raise
 
+    @property
+    def is_alive(self) -> bool:
+        """Check if the worker task is still running."""
+        return self._task is not None and not self._task.done()
+
     def get_state(self) -> dict:
         """Get current state for persistence."""
         return {
             "current_post_id": self._current_post_id,
             "current_comment_id": self._current_comment_id,
             "profile_copied": self._profile_copied,
+            "flood_retries": self._flood_retries,
+            "reconnect_attempts": self._reconnect_attempts,
             "last_update": datetime.now(timezone.utc).isoformat(),
         }

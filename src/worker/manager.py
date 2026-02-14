@@ -43,6 +43,12 @@ log = get_logger(__name__)
 # How often the manager scans for campaign changes
 CAMPAIGN_SCAN_INTERVAL = 30  # seconds
 
+# How often worker states are saved to DB (seconds)
+STATE_SAVE_INTERVAL = 300  # 5 minutes
+
+# How often idle assignments are checked for free channels
+IDLE_CHECK_INTERVAL = 120  # 2 minutes
+
 
 class WorkerManager:
     """
@@ -69,6 +75,8 @@ class WorkerManager:
 
         self._running = False
         self._scan_task: asyncio.Task | None = None
+        self._state_save_task: asyncio.Task | None = None
+        self._idle_check_task: asyncio.Task | None = None
 
     # ============================================================
     # Lifecycle
@@ -88,6 +96,18 @@ class WorkerManager:
             name="worker-manager-scanner",
         )
 
+        # Start periodic state saver
+        self._state_save_task = asyncio.create_task(
+            self._state_save_loop(),
+            name="worker-manager-state-saver",
+        )
+
+        # Start idle assignment checker
+        self._idle_check_task = asyncio.create_task(
+            self._idle_check_loop(),
+            name="worker-manager-idle-checker",
+        )
+
         log.info(
             "worker_manager_started",
             active_workers=len(self._workers),
@@ -98,13 +118,14 @@ class WorkerManager:
         self._running = False
         log.info("worker_manager_stopping", workers=len(self._workers))
 
-        # Cancel scanner
-        if self._scan_task and not self._scan_task.done():
-            self._scan_task.cancel()
-            try:
-                await self._scan_task
-            except asyncio.CancelledError:
-                pass
+        # Cancel background tasks
+        for task in [self._scan_task, self._state_save_task, self._idle_check_task]:
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         # Stop all workers
         stop_tasks = [worker.stop() for worker in self._workers.values()]
@@ -141,12 +162,25 @@ class WorkerManager:
         Scan for active campaigns and sync workers:
         - Start workers for new assignments
         - Stop workers for removed/paused campaigns
+        - Clean up dead tasks (worker crashed but still in dict)
         """
+        # Phase 1: Clean up dead tasks
+        dead_assignments = [
+            aid for aid, worker in self._workers.items()
+            if not worker.is_alive
+        ]
+        for aid in dead_assignments:
+            log.debug("cleaning_dead_worker", assignment_id=str(aid)[:8])
+            worker = self._workers.pop(aid, None)
+            self._tasks.pop(aid, None)
+            if worker:
+                await self._save_worker_state(aid, worker.get_state())
+
+        # Phase 2: Sync with DB
         async with self.session_factory() as session:
             try:
                 campaign_repo = CampaignRepository(session)
                 assignment_repo = AssignmentRepository(session)
-                account_repo = AccountRepository(session)
 
                 # Get all active campaigns
                 active_campaigns = await campaign_repo.get_active_campaigns()
@@ -180,16 +214,99 @@ class WorkerManager:
 
                 await session.commit()
 
-                if should_run or to_stop:
-                    log.debug(
-                        "campaign_scan_complete",
-                        active_workers=len(self._workers),
-                        started=len(should_run - set(self._workers.keys())),
-                        stopped=len(to_stop),
-                    )
+                log.debug(
+                    "campaign_scan_complete",
+                    active_workers=len(self._workers),
+                    dead_cleaned=len(dead_assignments),
+                    stopped=len(to_stop),
+                )
 
             except Exception as e:
                 log.error("campaign_scan_error", error=str(e))
+                await session.rollback()
+
+    async def _state_save_loop(self) -> None:
+        """Periodically save all worker states to DB."""
+        while self._running:
+            try:
+                await asyncio.sleep(STATE_SAVE_INTERVAL)
+                if self._running and self._workers:
+                    await self._save_all_states()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                log.error("state_save_loop_error", error=str(e))
+
+    async def _idle_check_loop(self) -> None:
+        """
+        Periodically check idle assignments for free channels.
+
+        When an account has no free channels, it gets IDLE status.
+        This loop checks if any channels have become free (e.g., another account
+        was banned from a channel, freeing it up).
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(IDLE_CHECK_INTERVAL)
+                if self._running:
+                    await self._check_idle_assignments()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                log.error("idle_check_error", error=str(e))
+
+    async def _check_idle_assignments(self) -> None:
+        """Find idle assignments and try to assign free channels."""
+        async with self.session_factory() as session:
+            try:
+                campaign_repo = CampaignRepository(session)
+                assign_repo = AssignmentRepository(session)
+                distributor = DistributorService(session)
+
+                active_campaigns = await campaign_repo.get_active_campaigns()
+
+                for campaign in active_campaigns:
+                    # Find IDLE assignments in this campaign
+                    from sqlalchemy import select
+                    from src.db.models.assignment import AssignmentModel
+                    stmt = select(AssignmentModel).where(
+                        AssignmentModel.campaign_id == campaign.id,
+                        AssignmentModel.status == AssignmentStatus.IDLE,
+                    )
+                    result = await session.execute(stmt)
+                    idle_assignments = list(result.scalars().all())
+
+                    for idle_assign in idle_assignments:
+                        # Try to find a free channel
+                        new_assignment = await distributor.assign_next_channel(
+                            campaign.id, idle_assign.account_id
+                        )
+
+                        if new_assignment:
+                            # Remove old idle assignment
+                            await assign_repo.delete(idle_assign.id)
+
+                            log.info(
+                                "idle_account_assigned_channel",
+                                account_id=str(idle_assign.account_id)[:8],
+                                campaign=campaign.name,
+                            )
+
+                            # Notify
+                            event_repo = EventLogRepository(session)
+                            await event_repo.log_event(
+                                owner_id=campaign.owner_id,
+                                event_type=EventType.CHANNEL_ROTATED,
+                                message="Idle account found free channel",
+                                campaign_id=campaign.id,
+                                account_id=idle_assign.account_id,
+                                channel_id=new_assignment.channel_id,
+                            )
+
+                await session.commit()
+
+            except Exception as e:
+                log.error("idle_check_error", error=str(e))
                 await session.rollback()
 
     # ============================================================
@@ -252,6 +369,8 @@ class WorkerManager:
             on_comment_posted=self._on_comment_posted,
             on_error=self._on_worker_error,
             on_no_posts=self._on_no_posts,
+            on_session_expired=self._on_session_expired,
+            on_comment_reposted=self._on_comment_reposted,
             connection_semaphore=self.connection_semaphore,
         )
 
@@ -380,10 +499,25 @@ class WorkerManager:
                             f"No free channels! Account is waiting.",
                         )
 
-                        # Set assignment to IDLE
+                        # Create an idle assignment so the account waits
+                        # The idle_check_loop will find a free channel later
                         if assignment:
-                            # Account will wait until scan picks up a new free channel
-                            pass
+                            # Get any channel to attach idle assignment to
+                            channels = await channel_repo.get_by_campaign(
+                                campaign_id, limit=1
+                            )
+                            if channels:
+                                await assign_repo.create(
+                                    campaign_id=campaign_id,
+                                    account_id=account_id,
+                                    channel_id=channels[0].id,
+                                    status=AssignmentStatus.IDLE,
+                                    state={},
+                                )
+                                log.info(
+                                    "idle_assignment_created",
+                                    account_id=str(account_id)[:8],
+                                )
 
                 await session.commit()
 
@@ -511,6 +645,131 @@ class WorkerManager:
 
             except Exception as e:
                 log.error("error_callback_error", error=str(e))
+                await session.rollback()
+
+    async def _on_session_expired(
+        self,
+        account_id: uuid.UUID,
+        channel_id: uuid.UUID,
+        assignment_id: uuid.UUID,
+        *,
+        reason: str = "",
+    ) -> None:
+        """
+        Handle account session expired/deactivated.
+
+        1. Mark account as ERROR in DB
+        2. Mark assignment as COMPLETED
+        3. Notify owner
+        """
+        log.error(
+            "session_expired_callback",
+            account_id=str(account_id)[:8],
+            reason=reason,
+        )
+
+        # Remove worker from tracking
+        self._workers.pop(assignment_id, None)
+        self._tasks.pop(assignment_id, None)
+
+        async with self.session_factory() as session:
+            try:
+                account_repo = AccountRepository(session)
+                assign_repo = AssignmentRepository(session)
+                campaign_repo = CampaignRepository(session)
+                event_repo = EventLogRepository(session)
+
+                # Mark account as errored
+                await account_repo.update_by_id(
+                    account_id, status=AccountStatus.ERROR
+                )
+
+                # Mark assignment as completed (account can't work)
+                await assign_repo.mark_completed(assignment_id)
+
+                # Log and notify
+                assignment = await assign_repo.get_by_id(assignment_id)
+                if assignment:
+                    campaign = await campaign_repo.get_by_id(assignment.campaign_id)
+                    if campaign:
+                        await event_repo.log_event(
+                            owner_id=campaign.owner_id,
+                            event_type=EventType.ACCOUNT_ERROR,
+                            message=f"Account session expired: {reason}",
+                            campaign_id=campaign.id,
+                            account_id=account_id,
+                            details={"reason": reason},
+                        )
+
+                        notif = NotificationService(self.bot, session)
+                        await notif.notify_error(
+                            campaign.owner_id,
+                            f"Account session expired! Re-authorize the account.",
+                        )
+
+                await session.commit()
+
+            except Exception as e:
+                log.error("session_expired_callback_error", error=str(e))
+                await session.rollback()
+
+    async def _on_comment_reposted(
+        self,
+        account_id: uuid.UUID,
+        channel_id: uuid.UUID,
+        assignment_id: uuid.UUID,
+        *,
+        comment_id: int = 0,
+        post_id: int = 0,
+        old_comment_id: int = 0,
+    ) -> None:
+        """Handle successful comment repost (delete + post)."""
+        async with self.session_factory() as session:
+            try:
+                assign_repo = AssignmentRepository(session)
+                campaign_repo = CampaignRepository(session)
+                event_repo = EventLogRepository(session)
+
+                # Update assignment state
+                await assign_repo.update_state(
+                    assignment_id,
+                    {
+                        "current_comment_id": comment_id,
+                        "current_post_id": post_id,
+                        "last_comment_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+                # Get campaign for stats and event
+                assignment = await assign_repo.get_by_id(assignment_id)
+                if assignment:
+                    campaign = await campaign_repo.get_by_id(assignment.campaign_id)
+                    if campaign:
+                        await event_repo.log_event(
+                            owner_id=campaign.owner_id,
+                            event_type=EventType.COMMENT_REPOSTED,
+                            message=f"Comment reposted (new={comment_id}, old={old_comment_id})",
+                            campaign_id=campaign.id,
+                            account_id=account_id,
+                            channel_id=channel_id,
+                            details={
+                                "comment_id": comment_id,
+                                "old_comment_id": old_comment_id,
+                                "post_id": post_id,
+                            },
+                        )
+
+                        notif = NotificationService(self.bot, session)
+                        await notif.notify(
+                            campaign.owner_id,
+                            EventType.COMMENT_REPOSTED,
+                            "Comment reposted in channel",
+                        )
+
+                await session.commit()
+
+            except Exception as e:
+                log.error("repost_callback_error", error=str(e))
                 await session.rollback()
 
     async def _on_no_posts(
