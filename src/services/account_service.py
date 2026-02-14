@@ -69,6 +69,10 @@ class AccountService:
         try:
             await client.connect()
             phone_code_hash = await send_auth_code(client, phone)
+            # CRITICAL: save session with auth_key so verify_code can reuse it.
+            # The auth code is bound to this specific auth_key — a new client
+            # with a different auth_key will always get "code expired".
+            partial_session = encrypt_session(client.session.save())
         finally:
             await client.disconnect()
 
@@ -76,6 +80,7 @@ class AccountService:
         if existing:
             existing.status = AccountStatus.AUTH_CODE
             existing.phone_code_hash = phone_code_hash
+            existing.session_data = partial_session
             await self.session.flush()
             account_id = existing.id
         else:
@@ -84,6 +89,7 @@ class AccountService:
                 phone=phone,
                 status=AccountStatus.AUTH_CODE,
                 phone_code_hash=phone_code_hash,
+                session_data=partial_session,
             )
             account_id = account.id
 
@@ -106,7 +112,10 @@ class AccountService:
         if account is None:
             raise AccountAuthError("Account not found")
 
-        client = create_client(proxy=proxy)
+        # Restore the session that was used to send the auth code.
+        # The auth_key must match or Telegram will reject the code.
+        session_str = decrypt_session(account.session_data) if account.session_data else None
+        client = create_client(session_string=session_str, proxy=proxy)
         try:
             await client.connect()
 
