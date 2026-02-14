@@ -33,15 +33,21 @@ async def main() -> None:
         max_connections=settings.worker_max_connections,
     )
 
-    # Verify database connection
+    # Verify database connection (retry up to 30s for Docker networking)
     engine = get_engine()
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-        log.info("database_connection_ok")
-    except Exception as e:
-        log.error("database_connection_failed", error=str(e))
-        sys.exit(1)
+    max_retries = 10
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            log.info("database_connection_ok")
+            break
+        except Exception as e:
+            if attempt == max_retries:
+                log.error("database_connection_failed", error=str(e), attempts=attempt)
+                sys.exit(1)
+            log.warning("database_not_ready_retrying", error=str(e), attempt=attempt)
+            await asyncio.sleep(3)
 
     # Create session factory
     session_factory = get_session_factory()
