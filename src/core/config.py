@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     worker_min_comment_delay: int = Field(default=60, ge=10, description="Min seconds between comments")
     worker_max_comment_delay: int = Field(default=120, ge=20, description="Max seconds between comments")
     worker_action_delay: int = Field(default=5, ge=1, description="Seconds between small actions")
-    worker_health_check_interval: int = Field(default=900, ge=60, description="Seconds between health checks")
+    worker_health_check_interval: int = Field(default=300, ge=60, description="Seconds between health checks")
     worker_repost_interval: int = Field(default=1800, ge=300, description="Seconds between comment reposts")
     worker_max_connections: int = Field(default=20, ge=1, le=100, description="Max concurrent Telethon clients")
 
