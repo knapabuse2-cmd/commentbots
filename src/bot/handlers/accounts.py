@@ -352,10 +352,12 @@ async def account_detail(
 
     status_text = status_labels.get(account.status.value, account.status.value)
 
+    phone_display = account.phone or "\u043d\u0435\u0442"
+    name_display = account.first_name or "\u043d\u0435\u0442"
     text = (
         f"\U0001f464 <b>\u0410\u043a\u043a\u0430\u0443\u043d\u0442</b>\n\n"  # 👤 Аккаунт
-        f"\U0001f4f1 \u0422\u0435\u043b\u0435\u0444\u043e\u043d: <code>{account.phone or '\u043d\u0435\u0442'}</code>\n"  # 📱 Телефон:
-        f"\U0001f464 \u0418\u043c\u044f: {account.first_name or '\u043d\u0435\u0442'}\n"  # 👤 Имя:
+        f"\U0001f4f1 \u0422\u0435\u043b\u0435\u0444\u043e\u043d: <code>{phone_display}</code>\n"  # 📱 Телефон:
+        f"\U0001f464 \u0418\u043c\u044f: {name_display}\n"  # 👤 Имя:
         f"\U0001f4ca \u0421\u0442\u0430\u0442\u0443\u0441: {status_text}\n"  # 📊 Статус:
         f"\U0001f4c5 \u0414\u043e\u0431\u0430\u0432\u043b\u0435\u043d: {account.created_at.strftime('%d.%m.%Y %H:%M')}"  # 📅 Добавлен:
     )
