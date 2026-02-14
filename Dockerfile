@@ -16,8 +16,11 @@ RUN pip install --no-cache-dir .
 # Copy application code
 COPY . .
 
-# Run as non-root user
-RUN useradd --create-home appuser
+# Create non-root user and give ownership of /app/data
+RUN useradd --create-home appuser && \
+    mkdir -p /app/data/photos && \
+    chown -R appuser:appuser /app/data
+
 USER appuser
 
 CMD ["python", "run.py"]
