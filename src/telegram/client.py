@@ -44,6 +44,7 @@ from telethon.errors import (
     SessionPasswordNeededError,
     SessionRevokedError,
     SlowModeWaitError,
+    UserAlreadyParticipantError,
     UserBannedInChannelError,
     UserDeactivatedError,
 )
@@ -343,6 +344,9 @@ async def join_channel(
         else:
             raise ValueError("Must provide username, invite_hash, or channel_id")
 
+    except UserAlreadyParticipantError:
+        # Already in the chat — this is fine, just skip
+        log.debug("already_in_channel", invite_hash=invite_hash, username=username, channel_id=channel_id)
     except FloodWaitError as e:
         raise AccountFloodWaitError(e.seconds)
     except ChannelPrivateError:
