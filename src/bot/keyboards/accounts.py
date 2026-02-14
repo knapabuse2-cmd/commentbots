@@ -23,6 +23,12 @@ def accounts_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="\U0001f4e6 \u0418\u043c\u043f\u043e\u0440\u0442 \u0438\u0437 ZIP",    # 📦 Импорт из ZIP
+                    callback_data="acc:add_zip",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="\U0001f4cb \u0421\u043f\u0438\u0441\u043e\u043a \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u043e\u0432",    # 📋 Список аккаунтов
                     callback_data="acc:list:0",
                 ),

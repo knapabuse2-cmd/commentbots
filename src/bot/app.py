@@ -13,7 +13,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
-from src.bot.handlers import accounts, campaigns, proxy, settings, start, stats
+from src.bot.handlers import accounts, bulk_import, campaigns, proxy, settings, start, stats
 from src.bot.middlewares.auth import AuthMiddleware
 from src.bot.middlewares.db_session import DbSessionMiddleware
 from src.core.config import get_settings
@@ -49,12 +49,13 @@ def create_dispatcher(
     # Register routers (order matters: more specific first)
     dp.include_router(start.router)
     dp.include_router(accounts.router)
+    dp.include_router(bulk_import.router)
     dp.include_router(campaigns.router)
     dp.include_router(proxy.router)
     dp.include_router(stats.router)
     dp.include_router(settings.router)
 
-    log.info("dispatcher_configured", routers=6, middlewares=2)
+    log.info("dispatcher_configured", routers=7, middlewares=2)
     return dp
 
 

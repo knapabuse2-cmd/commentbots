@@ -14,6 +14,7 @@ class AccountStates(StatesGroup):
     waiting_code = State()            # Waiting for SMS verification code
     waiting_2fa = State()             # Waiting for 2FA password
     waiting_session_file = State()    # Waiting for .session file upload
+    waiting_zip_file = State()        # Waiting for ZIP archive with accounts
 
 
 class CampaignStates(StatesGroup):

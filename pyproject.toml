@@ -26,6 +26,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tdata = [
+    "opentele>=1.15",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
