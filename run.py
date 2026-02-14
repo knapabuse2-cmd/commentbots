@@ -1,19 +1,18 @@
 """
 Application entry point.
 
-Starts both the admin bot and the background worker in a single process.
+Starts the admin bot (and later the background worker) in a single process.
 Uses asyncio to run them concurrently.
 """
 
 import asyncio
-import signal
 import sys
 
 from sqlalchemy import text
 
 from src.core.config import get_settings
 from src.core.logging import get_logger, setup_logging
-from src.db.base import close_engine, get_engine
+from src.db.base import close_engine, get_engine, get_session_factory
 
 log = get_logger(__name__)
 
@@ -40,29 +39,22 @@ async def main() -> None:
         log.error("database_connection_failed", error=str(e))
         sys.exit(1)
 
-    # TODO: Start admin bot and worker here (Steps 5-8)
-    log.info("application_ready", message="Bot and worker will be added in next steps")
+    # Create session factory
+    session_factory = get_session_factory()
 
-    # Keep running until signal
-    stop_event = asyncio.Event()
+    # Start admin bot
+    from src.bot.app import start_bot
 
-    def handle_signal() -> None:
-        log.info("shutdown_signal_received")
-        stop_event.set()
+    bot, dp = await start_bot(session_factory)
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, handle_signal)
-        except NotImplementedError:
-            # Windows doesn't support add_signal_handler
-            pass
+    log.info("application_ready")
 
     try:
-        await stop_event.wait()
-    except KeyboardInterrupt:
-        pass
+        # Start polling (blocks until stopped)
+        # drop_pending_updates=True skips messages sent while bot was offline
+        await dp.start_polling(bot, drop_pending_updates=True)
     finally:
+        await bot.session.close()
         await close_engine()
         log.info("application_stopped")
 
