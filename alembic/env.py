@@ -16,11 +16,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from src.core.config import get_settings
 from src.db.base import Base
 
-# Import all models so Alembic can detect them
-# These imports will be added as models are created in Step 2
-# from src.db.models.account import AccountModel  # noqa
-# from src.db.models.campaign import CampaignModel  # noqa
-# ... etc
+# Import all models so Alembic can detect them in metadata
+from src.db.models import *  # noqa: F401,F403
 
 config = context.config
 
