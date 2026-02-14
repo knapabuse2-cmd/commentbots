@@ -22,6 +22,7 @@ Design principles:
 """
 
 import asyncio
+import os
 import random
 import uuid
 from datetime import datetime, timezone
@@ -685,13 +686,20 @@ class AccountWorker:
         if not self._running:
             return CommentResult(success=False, error="Worker stopped")
 
+        # Determine photo path (downloaded at campaign creation time)
+        photo_path = None
+        if self.message_photo_id:
+            candidate = f"data/photos/{self.campaign_id}.jpg"
+            if os.path.exists(candidate):
+                photo_path = candidate
+
         return await post_comment(
             self.client,
             self.channel_identifier,
             post_id,
             self.message_text,
             entities=telethon_entities,
-            photo_path=None,  # Photo support via file_id will be in Step 8
+            photo_path=photo_path,
         )
 
     async def _delete_current_comment(self) -> None:

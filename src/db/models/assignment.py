@@ -13,7 +13,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -76,18 +76,22 @@ class AssignmentModel(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    # Ensure one active assignment per channel (no two accounts on same channel)
+    # Ensure one ACTIVE assignment per channel (no two accounts on same channel).
+    # Partial unique index: only enforced when status = 'active'.
+    # BLOCKED/COMPLETED/IDLE assignments don't block new assignments.
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "ix_one_active_per_channel",
             "channel_id",
-            name="uq_one_active_per_channel",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
         ),
     )
 
     # Relationships
     campaign: Mapped["CampaignModel"] = relationship(back_populates="assignments")  # noqa: F821
     account: Mapped["AccountModel"] = relationship(back_populates="assignments")  # noqa: F821
-    channel: Mapped["ChannelModel"] = relationship(back_populates="assignment")  # noqa: F821
+    channel: Mapped["ChannelModel"] = relationship(back_populates="assignments")  # noqa: F821
 
     def __repr__(self) -> str:
         return (

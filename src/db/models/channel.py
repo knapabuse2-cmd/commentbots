@@ -73,8 +73,8 @@ class ChannelModel(Base):
 
     # Relationships
     campaign: Mapped["CampaignModel"] = relationship(back_populates="channels")  # noqa: F821
-    assignment: Mapped["AssignmentModel | None"] = relationship(  # noqa: F821
-        back_populates="channel", uselist=False, cascade="all, delete-orphan"
+    assignments: Mapped[list["AssignmentModel"]] = relationship(  # noqa: F821
+        back_populates="channel", cascade="all, delete-orphan"
     )
 
     @property

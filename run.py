@@ -7,6 +7,7 @@ Both run in the same asyncio event loop.
 
 import asyncio
 import sys
+from pathlib import Path
 
 from sqlalchemy import text
 
@@ -21,6 +22,9 @@ async def main() -> None:
     """Start the application."""
     settings = get_settings()
     setup_logging(level=settings.log_level, pretty=settings.log_pretty)
+
+    # Ensure data directories exist
+    Path("data/photos").mkdir(parents=True, exist_ok=True)
 
     log.info(
         "application_starting",

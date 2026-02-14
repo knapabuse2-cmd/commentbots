@@ -10,10 +10,14 @@ RUN apt-get update && \
 # Copy dependency definition first (for Docker layer caching)
 COPY pyproject.toml .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -e ".[dev]"
+# Install Python dependencies (production only, no editable mode)
+RUN pip install --no-cache-dir .
 
 # Copy application code
 COPY . .
+
+# Run as non-root user
+RUN useradd --create-home appuser
+USER appuser
 
 CMD ["python", "run.py"]

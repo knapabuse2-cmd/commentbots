@@ -10,7 +10,9 @@ Flows:
 6. Start / Pause / Delete
 """
 
+import os
 import uuid
+from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -248,6 +250,13 @@ async def set_message_receive(
                 }
                 for e in message.caption_entities
             ]
+
+        # Download photo to local storage (Bot API file_id != Telethon file_id)
+        photos_dir = Path("data/photos")
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        photo_path = photos_dir / f"{campaign_id}.jpg"
+        await message.bot.download(message.photo[-1], destination=photo_path)
+        log.info("campaign_photo_downloaded", campaign_id=str(campaign_id), path=str(photo_path))
     elif message.text:
         text_content = message.text
         if message.entities:
