@@ -149,22 +149,28 @@ def campaign_accounts_keyboard(
     available_accounts: list,
     assigned_account_ids: set[uuid.UUID],
 ) -> InlineKeyboardMarkup:
-    """Account selection for a campaign — toggle add/remove."""
-    cid = str(campaign_id)
+    """Account selection for a campaign — toggle add/remove.
+
+    Uses short hex IDs to stay within Telegram's 64-byte callback_data limit.
+    campaign_id is stored in FSM state by the handler.
+    """
     buttons: list[list[InlineKeyboardButton]] = []
 
     for acc in available_accounts:
+        # Use .hex (no dashes, 32 chars) to keep callback_data short
+        aid = acc.id.hex
         is_assigned = acc.id in assigned_account_ids
         if is_assigned:
             label = f"\u2705 {acc.display_name}"  # ✅
-            action = f"camp:rm_acc:{cid}:{acc.id}"
+            action = f"ca:rm:{aid}"
         else:
             label = f"\u2b1c {acc.display_name}"   # ⬜
-            action = f"camp:add_acc:{cid}:{acc.id}"
+            action = f"ca:add:{aid}"
         buttons.append([
             InlineKeyboardButton(text=label, callback_data=action)
         ])
 
+    cid = str(campaign_id)
     buttons.append([
         InlineKeyboardButton(text="\u2b05 \u041d\u0430\u0437\u0430\u0434", callback_data=f"camp:detail:{cid}")
     ])

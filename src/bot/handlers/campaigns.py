@@ -434,10 +434,13 @@ async def view_channels(
 @router.callback_query(F.data.startswith("camp:accounts:"))
 async def manage_accounts(
     callback: CallbackQuery,
+    state: FSMContext,
     session: AsyncSession,
     owner_id: uuid.UUID,
 ) -> None:
     campaign_id = uuid.UUID(callback.data.split(":")[-1])
+    # Store campaign_id in FSM state so account toggle buttons don't need it
+    await state.update_data(acc_campaign_id=str(campaign_id))
 
     # Get all ACTIVE accounts for this owner
     acc_repo = AccountRepository(session)
@@ -467,15 +470,16 @@ async def manage_accounts(
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("camp:add_acc:"))
+@router.callback_query(F.data.startswith("ca:add:"))
 async def add_account_to_campaign(
     callback: CallbackQuery,
+    state: FSMContext,
     session: AsyncSession,
     owner_id: uuid.UUID,
 ) -> None:
-    parts = callback.data.split(":")
-    campaign_id = uuid.UUID(parts[2])
-    account_id = uuid.UUID(parts[3])
+    data = await state.get_data()
+    campaign_id = uuid.UUID(data["acc_campaign_id"])
+    account_id = uuid.UUID(callback.data.split(":")[-1])
 
     # Create a dummy assignment (no channel yet — will be assigned by distributor)
     ch_svc = ChannelService(session)
@@ -544,15 +548,16 @@ async def add_account_to_campaign(
     )
 
 
-@router.callback_query(F.data.startswith("camp:rm_acc:"))
+@router.callback_query(F.data.startswith("ca:rm:"))
 async def remove_account_from_campaign(
     callback: CallbackQuery,
+    state: FSMContext,
     session: AsyncSession,
     owner_id: uuid.UUID,
 ) -> None:
-    parts = callback.data.split(":")
-    campaign_id = uuid.UUID(parts[2])
-    account_id = uuid.UUID(parts[3])
+    data = await state.get_data()
+    campaign_id = uuid.UUID(data["acc_campaign_id"])
+    account_id = uuid.UUID(callback.data.split(":")[-1])
 
     # Remove all assignments for this account in this campaign
     assign_repo = AssignmentRepository(session)
