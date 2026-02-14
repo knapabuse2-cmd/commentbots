@@ -60,7 +60,8 @@ class ChannelModel(Base):
     telegram_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     status: Mapped[ChannelStatus] = mapped_column(
-        Enum(ChannelStatus, name="channel_status"),
+        Enum(ChannelStatus, name="channel_status",
+             values_callable=lambda e: [x.value for x in e]),
         nullable=False, default=ChannelStatus.PENDING, index=True,
     )
 

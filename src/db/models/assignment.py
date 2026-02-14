@@ -48,7 +48,8 @@ class AssignmentModel(Base):
     )
 
     status: Mapped[AssignmentStatus] = mapped_column(
-        Enum(AssignmentStatus, name="assignment_status"),
+        Enum(AssignmentStatus, name="assignment_status",
+             values_callable=lambda e: [x.value for x in e]),
         nullable=False, default=AssignmentStatus.ACTIVE, index=True,
     )
 

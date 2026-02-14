@@ -68,7 +68,8 @@ class EventLogModel(Base):
     )
 
     event_type: Mapped[EventType] = mapped_column(
-        Enum(EventType, name="event_type"),
+        Enum(EventType, name="event_type",
+             values_callable=lambda e: [x.value for x in e]),
         nullable=False, index=True,
     )
 
