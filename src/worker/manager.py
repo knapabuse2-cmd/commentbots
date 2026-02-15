@@ -256,9 +256,18 @@ class WorkerManager:
                 log.error("idle_check_error", error=str(e))
 
     async def _check_idle_assignments(self) -> None:
-        """Find idle assignments and try to assign free channels."""
+        """
+        Find accounts that have no active assignment and try to give them work.
+
+        This catches two cases:
+        1. IDLE assignments (explicit idle marker)
+        2. "Lost" accounts — have blocked assignments but no active/idle one
+           (e.g., race condition during rotation left them without a channel)
+        """
         async with self.session_factory() as session:
             try:
+                from sqlalchemy import select, and_, exists
+
                 campaign_repo = CampaignRepository(session)
                 assign_repo = AssignmentRepository(session)
                 distributor = DistributorService(session)
@@ -266,42 +275,80 @@ class WorkerManager:
                 active_campaigns = await campaign_repo.get_active_campaigns()
 
                 for campaign in active_campaigns:
-                    # Find IDLE assignments in this campaign
-                    from sqlalchemy import select
+                    # Find accounts that participated in this campaign
+                    # but have NO active assignment right now
                     from src.db.models.assignment import AssignmentModel
-                    stmt = select(AssignmentModel).where(
-                        AssignmentModel.campaign_id == campaign.id,
-                        AssignmentModel.status == AssignmentStatus.IDLE,
+
+                    # Subquery: accounts with active assignment in this campaign
+                    active_subq = (
+                        select(AssignmentModel.account_id)
+                        .where(
+                            AssignmentModel.campaign_id == campaign.id,
+                            AssignmentModel.status == AssignmentStatus.ACTIVE,
+                        )
+                        .subquery()
+                    )
+
+                    # All unique accounts that ever had assignment in this campaign
+                    # but DON'T have an active one now
+                    stmt = (
+                        select(AssignmentModel.account_id)
+                        .where(
+                            AssignmentModel.campaign_id == campaign.id,
+                            AssignmentModel.account_id.notin_(select(active_subq)),
+                        )
+                        .distinct()
                     )
                     result = await session.execute(stmt)
-                    idle_assignments = list(result.scalars().all())
+                    idle_account_ids = [row[0] for row in result.all()]
 
-                    for idle_assign in idle_assignments:
-                        # Try to find a free channel
-                        new_assignment = await distributor.assign_next_channel(
-                            campaign.id, idle_assign.account_id
+                    if not idle_account_ids:
+                        continue
+
+                    # Filter: only accounts that are still active (not errored/disabled)
+                    account_repo = AccountRepository(session)
+                    for account_id in idle_account_ids:
+                        account = await account_repo.get_by_id(account_id)
+                        if not account or not account.is_available:
+                            continue
+
+                        # Skip if already has a worker running
+                        has_worker = any(
+                            w.account_id == account_id
+                            for w in self._workers.values()
                         )
+                        if has_worker:
+                            continue
+
+                        # Try to assign a free channel
+                        try:
+                            new_assignment = await distributor.assign_next_channel(
+                                campaign.id, account_id
+                            )
+                        except Exception as e:
+                            log.warning(
+                                "idle_assign_error",
+                                error=str(e),
+                                account_id=str(account_id)[:8],
+                            )
+                            continue
 
                         if new_assignment:
-                            # Remove old idle assignment
-                            await assign_repo.delete(idle_assign.id)
-
                             log.info(
                                 "idle_account_assigned_channel",
-                                account_id=str(idle_assign.account_id)[:8],
+                                account_id=str(account_id)[:8],
                                 campaign=campaign.name,
                             )
 
-                            # Notify
-                            event_repo = EventLogRepository(session)
-                            await event_repo.log_event(
-                                owner_id=campaign.owner_id,
-                                event_type=EventType.CHANNEL_ROTATED,
-                                message="Idle account found free channel",
-                                campaign_id=campaign.id,
-                                account_id=idle_assign.account_id,
-                                channel_id=new_assignment.channel_id,
+                            # Clean up any old IDLE assignments for this account
+                            idle_stmt = select(AssignmentModel).where(
+                                AssignmentModel.campaign_id == campaign.id,
+                                AssignmentModel.account_id == account_id,
+                                AssignmentModel.status == AssignmentStatus.IDLE,
                             )
+                            idle_result = await session.execute(idle_stmt)
+                            for old_idle in idle_result.scalars().all():
+                                await assign_repo.delete(old_idle.id)
 
                 await session.commit()
 
