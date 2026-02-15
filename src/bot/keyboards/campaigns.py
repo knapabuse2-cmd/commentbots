@@ -112,6 +112,14 @@ def campaign_detail_keyboard(
         ),
     ])
 
+    # Profile bio
+    buttons.append([
+        InlineKeyboardButton(
+            text="\U0001f4cb \u0411\u0438\u043e \u043f\u0440\u043e\u0444\u0438\u043b\u044f",  # 📋 Био профиля
+            callback_data=f"camp:bio:{cid}",
+        ),
+    ])
+
     # Start / Pause
     if status in ("draft", "paused"):
         buttons.append([

@@ -23,6 +23,7 @@ class CampaignStates(StatesGroup):
     waiting_message = State()         # Waiting for campaign message (text/photo)
     waiting_channels = State()        # Waiting for channel links (text)
     waiting_channels_file = State()   # Waiting for channels file upload
+    waiting_bio = State()             # Waiting for bio text to set on all accounts
 
 
 class ProxyStates(StatesGroup):

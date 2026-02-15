@@ -651,6 +651,166 @@ async def remove_account_from_campaign(
 
 
 # ============================================================
+# Profile bio
+# ============================================================
+
+
+@router.callback_query(F.data.startswith("camp:bio:"))
+async def set_bio_start(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    owner_id: uuid.UUID,
+) -> None:
+    """Start bio update flow — ask user for bio text."""
+    campaign_id = callback.data.split(":")[-1]
+
+    svc = CampaignService(session)
+    try:
+        await svc.get_campaign(uuid.UUID(campaign_id), owner_id=owner_id)
+    except OwnershipError:
+        await callback.answer("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430", show_alert=True)
+        return
+
+    await state.update_data(campaign_id=campaign_id)
+    await state.set_state(CampaignStates.waiting_bio)
+    await callback.message.edit_text(
+        "\U0001f4cb <b>\u0411\u0438\u043e \u043f\u0440\u043e\u0444\u0438\u043b\u044f</b>\n\n"
+        "\u041e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u0442\u0435\u043a\u0441\u0442 \u0431\u0438\u043e, "
+        "\u043a\u043e\u0442\u043e\u0440\u044b\u0439 \u0431\u0443\u0434\u0435\u0442 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d "
+        "\u043d\u0430 <b>\u0432\u0441\u0435\u0445</b> \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430\u0445 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438.\n\n"
+        "<i>\u041c\u0430\u043a\u0441\u0438\u043c\u0443\u043c 70 \u0441\u0438\u043c\u0432\u043e\u043b\u043e\u0432 (Telegram \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u0435)</i>",
+        reply_markup=cancel_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(CampaignStates.waiting_bio)
+async def set_bio_receive(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    owner_id: uuid.UUID,
+) -> None:
+    """Receive bio text and apply to all campaign accounts."""
+    bio_text = (message.text or "").strip()
+
+    if not bio_text:
+        await message.answer(
+            "\u274c \u041e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u043e\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
+    if len(bio_text) > 70:
+        await message.answer(
+            f"\u274c \u0421\u043b\u0438\u0448\u043a\u043e\u043c \u0434\u043b\u0438\u043d\u043d\u043e\u0435 \u0431\u0438\u043e ({len(bio_text)}/70).\n"
+            "\u0421\u043e\u043a\u0440\u0430\u0442\u0438\u0442\u0435 \u0434\u043e 70 \u0441\u0438\u043c\u0432\u043e\u043b\u043e\u0432.",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
+    data = await state.get_data()
+    campaign_id = uuid.UUID(data["campaign_id"])
+    await state.clear()
+
+    # Get all accounts assigned to the campaign
+    svc = CampaignService(session)
+    try:
+        accounts = await svc.get_campaign_accounts(campaign_id, owner_id=owner_id)
+    except OwnershipError:
+        await message.answer("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430")
+        return
+
+    if not accounts:
+        await message.answer(
+            "\u274c \u0412 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438 \u043d\u0435\u0442 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u043e\u0432",
+            reply_markup=campaign_detail_keyboard(campaign_id, "draft"),
+        )
+        return
+
+    progress_msg = await message.answer(
+        f"\u23f3 \u041e\u0431\u043d\u043e\u0432\u043b\u044f\u044e \u0431\u0438\u043e \u043d\u0430 {len(accounts)} \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0430\u0445..."
+    )
+
+    from src.telegram.client import create_client, decrypt_session
+    from src.db.repositories.proxy_repo import ProxyRepository
+    from telethon.tl.functions.account import UpdateProfileRequest
+
+    proxy_repo = ProxyRepository(session)
+    success = 0
+    failed = 0
+    errors: list[str] = []
+
+    for account in accounts:
+        if not account.session_data:
+            failed += 1
+            errors.append(f"{account.display_name}: \u043d\u0435\u0442 \u0441\u0435\u0441\u0441\u0438\u0438")
+            continue
+
+        client = None
+        try:
+            session_str = decrypt_session(account.session_data)
+
+            proxy = None
+            if account.proxy_id:
+                proxy_model = await proxy_repo.get_by_id(account.proxy_id)
+                if proxy_model:
+                    proxy = {
+                        "host": proxy_model.host,
+                        "port": proxy_model.port,
+                    }
+                    if proxy_model.username:
+                        proxy["username"] = proxy_model.username
+                    if proxy_model.password:
+                        proxy["password"] = proxy_model.password
+
+            client = create_client(session_string=session_str, proxy=proxy)
+            await client.connect()
+            await client(UpdateProfileRequest(about=bio_text))
+            success += 1
+            log.info("account_bio_updated", account=account.display_name, bio=bio_text)
+
+        except Exception as e:
+            failed += 1
+            err_msg = str(e)[:60]
+            errors.append(f"{account.display_name}: {err_msg}")
+            log.warning("account_bio_update_failed", account=account.display_name, error=str(e))
+        finally:
+            if client:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+    result = (
+        f"\U0001f4cb <b>\u0411\u0438\u043e \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e</b>\n\n"
+        f"\u0422\u0435\u043a\u0441\u0442: <i>{bio_text}</i>\n\n"
+        f"\u2705 \u0423\u0441\u043f\u0435\u0448\u043d\u043e: {success}/{len(accounts)}\n"
+    )
+    if failed:
+        result += f"\u274c \u041e\u0448\u0438\u0431\u043a\u0438: {failed}\n"
+        for err in errors[:5]:
+            result += f"\u2022 {err}\n"
+        if len(errors) > 5:
+            result += f"... \u0438 \u0435\u0449\u0451 {len(errors) - 5}\n"
+
+    try:
+        await progress_msg.edit_text(
+            result,
+            reply_markup=campaign_detail_keyboard(campaign_id, "draft"),
+            parse_mode="HTML",
+        )
+    except Exception:
+        await message.answer(
+            result,
+            reply_markup=campaign_detail_keyboard(campaign_id, "draft"),
+            parse_mode="HTML",
+        )
+
+
+# ============================================================
 # Distribute
 # ============================================================
 
