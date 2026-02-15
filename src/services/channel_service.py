@@ -9,6 +9,7 @@ Handles:
 """
 
 import uuid
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,7 +77,33 @@ class ChannelService:
             campaign_id=str(campaign_id),
             channel=channel.display_name,
         )
+
+        # Append to channels.txt for record-keeping
+        self._append_to_channels_file(link)
+
         return channel, None
+
+    @staticmethod
+    def _append_to_channels_file(link: str) -> None:
+        """Append channel link to data/channels.txt (one per line, no dupes)."""
+        channels_file = Path("data/channels.txt")
+        try:
+            channels_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # Read existing to avoid duplicates
+            existing: set[str] = set()
+            if channels_file.exists():
+                existing = {
+                    line.strip()
+                    for line in channels_file.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                }
+
+            if link.strip() not in existing:
+                with channels_file.open("a", encoding="utf-8") as f:
+                    f.write(link.strip() + "\n")
+        except Exception as exc:
+            log.warning("channels_file_append_error", error=str(exc), link=link)
 
     async def add_channels_bulk(
         self, campaign_id: uuid.UUID, text: str,
