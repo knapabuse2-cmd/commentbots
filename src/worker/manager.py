@@ -483,13 +483,6 @@ class WorkerManager:
                             channel_id=new_assignment.channel_id,
                         )
 
-                        # Notify
-                        notif = NotificationService(self.bot, session)
-                        await notif.notify(
-                            owner_id,
-                            EventType.CHANNEL_ROTATED,
-                            f"Account rotated: banned → new channel assigned",
-                        )
                     else:
                         # No free channels
                         await event_repo.log_event(
@@ -581,14 +574,6 @@ class WorkerManager:
                             details={"comment_id": comment_id, "post_id": post_id},
                         )
 
-                        # Notify
-                        notif = NotificationService(self.bot, session)
-                        await notif.notify(
-                            campaign.owner_id,
-                            EventType.COMMENT_POSTED,
-                            f"Comment posted in channel",
-                        )
-
                 await session.commit()
 
             except Exception as e:
@@ -644,13 +629,6 @@ class WorkerManager:
                             account_id=account_id,
                             channel_id=channel_id,
                             details={"error": error, "fail_count": fail_count},
-                        )
-
-                        # Notify on errors
-                        notif = NotificationService(self.bot, session)
-                        await notif.notify_error(
-                            campaign.owner_id,
-                            f"Worker error: {error[:200]}",
                         )
 
                         # Update campaign stats
@@ -774,13 +752,6 @@ class WorkerManager:
                                 "old_comment_id": old_comment_id,
                                 "post_id": post_id,
                             },
-                        )
-
-                        notif = NotificationService(self.bot, session)
-                        await notif.notify(
-                            campaign.owner_id,
-                            EventType.COMMENT_REPOSTED,
-                            "Comment reposted in channel",
                         )
 
                 await session.commit()
