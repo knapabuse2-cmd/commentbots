@@ -11,6 +11,7 @@ Then delegates to AccountService.import_session() for each.
 import json
 import sqlite3
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,15 +50,67 @@ class ImportResult:
     telegram_id: int | None = None
 
 
+def _extract_nested_zips(directory: Path) -> None:
+    """
+    Recursively extract any ZIP/RAR archives found inside a directory.
+
+    Handles the common case of a ZIP containing individual ZIPs per account,
+    each with tdata folders inside.
+    """
+    for zip_path in list(directory.rglob("*.zip")):
+        if not zip_path.is_file():
+            continue
+        target = zip_path.parent / zip_path.stem
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                # Security: skip if path traversal
+                safe = True
+                for member in zf.namelist():
+                    mp = Path(member)
+                    if mp.is_absolute() or ".." in mp.parts:
+                        safe = False
+                        break
+                if safe:
+                    target.mkdir(parents=True, exist_ok=True)
+                    zf.extractall(target)
+                    log.info("nested_zip_extracted", path=str(zip_path), count=len(zf.namelist()))
+        except (zipfile.BadZipFile, Exception) as e:
+            log.warning("nested_zip_error", path=str(zip_path), error=str(e))
+
+    # Recurse: newly extracted archives may contain more ZIPs (max 2 levels deep)
+    remaining = list(directory.rglob("*.zip"))
+    # Avoid infinite loops — only extract new ones that weren't there before
+    for zip_path in remaining:
+        if not zip_path.is_file():
+            continue
+        target = zip_path.parent / zip_path.stem
+        if target.exists():
+            continue  # Already extracted
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                safe = all(
+                    not Path(m).is_absolute() and ".." not in Path(m).parts
+                    for m in zf.namelist()
+                )
+                if safe:
+                    target.mkdir(parents=True, exist_ok=True)
+                    zf.extractall(target)
+        except Exception:
+            pass
+
+
 def discover_accounts(extract_dir: Path) -> list[DiscoveredAccount]:
     """
     Recursively scan extracted ZIP contents for importable accounts.
 
-    Detection rules:
+    First extracts any nested ZIP archives, then scans for:
     1. .session + .json pair: files with same stem (e.g., "acc1.session" + "acc1.json")
     2. .session without .json: standalone Telethon session files
     3. tdata folder: directory named "tdata" with key_data or key_dri files inside
     """
+    # Extract nested ZIPs first (ZIP of ZIPs with tdata)
+    _extract_nested_zips(extract_dir)
+
     accounts: list[DiscoveredAccount] = []
     seen_paths: set[str] = set()
 
@@ -169,6 +222,22 @@ class BulkImportService:
             # Step 4: Link proxy to account (if resolved)
             if proxy_id and account:
                 await self.account_svc.bind_proxy(account.id, proxy_id)
+
+            # Step 5: Auto-assign free proxy if none was bound (1 proxy = 1 account)
+            if not proxy_id and account:
+                free_proxy = await self.proxy_repo.get_unbound(owner_id)
+                if free_proxy:
+                    await self.account_svc.bind_proxy(account.id, free_proxy.id)
+                    proxy_dict = {"host": free_proxy.host, "port": free_proxy.port}
+                    if free_proxy.username:
+                        proxy_dict["username"] = free_proxy.username
+                    if free_proxy.password:
+                        proxy_dict["password"] = free_proxy.password
+                    log.info(
+                        "auto_proxy_assigned",
+                        account=discovered.name,
+                        proxy=free_proxy.address,
+                    )
 
             log.info(
                 "bulk_import_account_ok",

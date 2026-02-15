@@ -54,3 +54,31 @@ class ProxyRepository(BaseRepository[ProxyModel]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_unbound(self, owner_id: uuid.UUID) -> ProxyModel | None:
+        """Get a proxy that has no accounts linked to it (1 proxy = 1 account)."""
+        from src.db.models.account import AccountModel
+        from sqlalchemy import func
+
+        # Subquery: proxy_ids that already have accounts
+        bound_ids = (
+            select(AccountModel.proxy_id)
+            .where(
+                AccountModel.proxy_id.isnot(None),
+                AccountModel.owner_id == owner_id,
+            )
+            .distinct()
+            .scalar_subquery()
+        )
+
+        stmt = (
+            select(ProxyModel)
+            .where(
+                ProxyModel.owner_id == owner_id,
+                ProxyModel.id.notin_(bound_ids),
+            )
+            .order_by(ProxyModel.created_at.asc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()

@@ -256,9 +256,19 @@ async def add_session_receive(
 
     try:
         account = await svc.import_session(owner_id, session_string)
+
+        # Auto-assign free proxy (1 proxy = 1 account)
+        proxy_msg = ""
+        from src.db.repositories.proxy_repo import ProxyRepository
+        proxy_repo = ProxyRepository(session)
+        free_proxy = await proxy_repo.get_unbound(owner_id)
+        if free_proxy:
+            await svc.bind_proxy(account.id, free_proxy.id)
+            proxy_msg = f"\n\U0001f310 \u041f\u0440\u043e\u043a\u0441\u0438: <code>{free_proxy.address}</code>"
+
         await state.clear()
         await message.answer(
-            f"\u2705 \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0438\u043c\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u043d: <b>{account.display_name}</b>",  # ✅ Аккаунт импортирован: ...
+            f"\u2705 \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0438\u043c\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u043d: <b>{account.display_name}</b>{proxy_msg}",
             reply_markup=main_menu_keyboard(),
             parse_mode="HTML",
         )

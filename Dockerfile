@@ -10,8 +10,8 @@ RUN apt-get update && \
 # Copy dependency definition first (for Docker layer caching)
 COPY pyproject.toml .
 
-# Install Python dependencies (production only, no editable mode)
-RUN pip install --no-cache-dir .
+# Install Python dependencies (production only, no editable mode, with tdata support)
+RUN pip install --no-cache-dir ".[tdata]"
 
 # Copy application code
 COPY . .
