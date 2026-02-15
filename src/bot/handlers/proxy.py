@@ -233,7 +233,8 @@ async def proxy_detail(
     from sqlalchemy import select, func
 
     stmt = select(func.count()).select_from(AccountModel).where(
-        AccountModel.proxy_id == proxy_id
+        AccountModel.proxy_id == proxy_id,
+        AccountModel.owner_id == owner_id,
     )
     result = await session.execute(stmt)
     linked_accounts = result.scalar_one()
@@ -287,7 +288,10 @@ async def delete_proxy(
 
     stmt = (
         update(AccountModel)
-        .where(AccountModel.proxy_id == proxy_id)
+        .where(
+            AccountModel.proxy_id == proxy_id,
+            AccountModel.owner_id == owner_id,
+        )
         .values(proxy_id=None)
     )
     await session.execute(stmt)
