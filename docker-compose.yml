@@ -28,9 +28,8 @@ services:
       # Override host to use docker network
       POSTGRES_HOST: postgres
     volumes:
-      # Persist session files and data
-      - appdata:/app/data
+      # Persist session files and data (bind mount — visible on host)
+      - ./data:/app/data
 
 volumes:
   pgdata:
-  appdata:
