@@ -557,9 +557,17 @@ class AccountWorker:
                 name=me.first_name,
                 **self._log_ctx,
             )
-        except Exception:
+        except AccountBannedError:
             if self.connection_semaphore:
                 self.connection_semaphore.release()
+            raise
+        except Exception as e:
+            if self.connection_semaphore:
+                self.connection_semaphore.release()
+            # Frozen / deactivated accounts raise ForbiddenError at connect/get_me
+            error_str = str(e).lower()
+            if "frozen" in error_str or "deactivated" in error_str:
+                raise AccountBannedError(f"Account frozen/deactivated: {e}")
             raise
 
     async def _disconnect(self) -> None:

@@ -385,6 +385,12 @@ async def join_channel(
         raise AccountFloodWaitError(e.seconds)
     except ChannelPrivateError:
         raise ChannelAccessDeniedError("Channel is private, cannot join")
+    except Exception as e:
+        # Catch frozen / deactivated account errors
+        error_str = str(e).lower()
+        if "frozen" in error_str or "deactivated" in error_str:
+            raise AccountBannedError(f"Account frozen/deactivated: {e}")
+        raise  # Re-raise anything else
 
 
 # ============================================================
@@ -522,9 +528,15 @@ async def post_comment(
         )
 
     except Exception as e:
-        # Catch ForbiddenError variants (CHAT_SEND_PLAIN_FORBIDDEN, etc.)
         error_name = type(e).__name__
         error_str = str(e)
+
+        # Frozen / deactivated account — global problem, re-raise as AccountBannedError
+        error_lower = error_str.lower()
+        if "frozen" in error_lower or "deactivated" in error_lower:
+            raise AccountBannedError(f"Account frozen/deactivated: {error_str}")
+
+        # Catch ForbiddenError variants (CHAT_SEND_PLAIN_FORBIDDEN, etc.)
         if "Forbidden" in error_name or "FORBIDDEN" in error_str:
             log.warning(
                 "comment_post_forbidden",
