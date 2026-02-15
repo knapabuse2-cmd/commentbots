@@ -474,14 +474,19 @@ async def post_comment(
                 send_kwargs["formatting_entities"] = entities
             result = await client.send_message(**send_kwargs)
 
+        # Telethon may return None/MessageEmpty when the server sends
+        # an empty mapping (e.g. slowmode channels). The comment is still
+        # posted — we just don't get the message_id back.
+        comment_id = getattr(result, "id", None) if result else None
+
         log.debug(
             "comment_posted",
             channel=str(channel_identifier),
             post_id=post_id,
-            comment_id=result.id,
+            comment_id=comment_id,
         )
 
-        return CommentResult(success=True, message_id=result.id)
+        return CommentResult(success=True, message_id=comment_id)
 
     except UserBannedInChannelError:
         return CommentResult(
