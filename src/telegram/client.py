@@ -357,12 +357,30 @@ async def join_channel(
             channel=invite_hash or username or str(channel_id),
         )
     except InviteRequestSentError:
-        # Channel requires admin approval to join — cannot auto-join
-        log.warning("invite_request_sent", invite_hash=invite_hash)
-        raise ChannelAccessDeniedError(
-            "Channel requires approval to join",
-            channel=invite_hash or username or str(channel_id),
-        )
+        # Channel requires admin approval — most have auto-accept
+        # Wait 30 sec and try joining again (we should be accepted by then)
+        log.info("invite_request_sent_waiting", invite_hash=invite_hash)
+        await asyncio.sleep(30)
+
+        # Try joining again — if accepted, we're already a participant
+        try:
+            if invite_hash:
+                await client(ImportChatInviteRequest(invite_hash))
+            elif username:
+                await client(JoinChannelRequest(username))
+            log.info("invite_request_accepted", invite_hash=invite_hash)
+        except UserAlreadyParticipantError:
+            # Auto-accept worked — we're in
+            log.info("invite_request_accepted", invite_hash=invite_hash)
+        except (InviteRequestSentError, ChannelPrivateError, InviteHashExpiredError):
+            # Still not accepted or link died — give up
+            log.warning("invite_request_not_accepted", invite_hash=invite_hash)
+            raise ChannelAccessDeniedError(
+                "Channel requires approval to join (not accepted after 30s)",
+                channel=invite_hash or username or str(channel_id),
+            )
+        except FloodWaitError as e:
+            raise AccountFloodWaitError(e.seconds)
     except FloodWaitError as e:
         raise AccountFloodWaitError(e.seconds)
     except ChannelPrivateError:
