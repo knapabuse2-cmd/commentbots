@@ -34,6 +34,8 @@ from telethon.errors import (
     ChatAdminRequiredError,
     ChatWriteForbiddenError,
     FloodWaitError,
+    InviteHashExpiredError,
+    InviteRequestSentError,
     MsgIdInvalidError,
     PasswordHashInvalidError,
     PhoneCodeExpiredError,
@@ -347,6 +349,20 @@ async def join_channel(
     except UserAlreadyParticipantError:
         # Already in the chat — this is fine, just skip
         log.debug("already_in_channel", invite_hash=invite_hash, username=username, channel_id=channel_id)
+    except InviteHashExpiredError:
+        # Invite link expired permanently — channel cannot be joined
+        log.warning("invite_hash_expired", invite_hash=invite_hash)
+        raise ChannelNotFoundError(
+            "Invite link expired",
+            channel=invite_hash or username or str(channel_id),
+        )
+    except InviteRequestSentError:
+        # Channel requires admin approval to join — cannot auto-join
+        log.warning("invite_request_sent", invite_hash=invite_hash)
+        raise ChannelAccessDeniedError(
+            "Channel requires approval to join",
+            channel=invite_hash or username or str(channel_id),
+        )
     except FloodWaitError as e:
         raise AccountFloodWaitError(e.seconds)
     except ChannelPrivateError:

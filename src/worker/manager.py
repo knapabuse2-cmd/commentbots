@@ -615,6 +615,15 @@ class WorkerManager:
                 # Increment fail count
                 fail_count = await assign_repo.increment_fail_count(assignment_id)
 
+                # If too many failures, block the assignment to stop infinite restarts
+                if fail_count >= 3:
+                    await assign_repo.mark_blocked(assignment_id)
+                    log.warning(
+                        "assignment_blocked_too_many_fails",
+                        assignment_id=str(assignment_id)[:8],
+                        fail_count=fail_count,
+                    )
+
                 assignment = await assign_repo.get_by_id(assignment_id)
                 if assignment:
                     campaign = await campaign_repo.get_by_id(assignment.campaign_id)

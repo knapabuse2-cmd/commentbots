@@ -314,15 +314,26 @@ class AccountWorker:
                 await self._run()
 
         except ChannelCommentsDisabledError as e:
+            # Channel has no discussion group -> can't comment -> rotate to next channel
             log.warning("comments_disabled", error=str(e), **self._log_ctx)
-            if self.on_error:
-                await self.on_error(
+            if self.on_banned:
+                await self.on_banned(
                     self.account_id, self.channel_id, self.assignment_id,
-                    error=f"Comments disabled in channel: {self.channel_identifier}",
+                    reason=f"comments_disabled: {self.channel_identifier}",
                 )
 
-        except (ChannelAccessDeniedError, ChannelNotFoundError) as e:
-            # Already handled inside _ensure_joined, but catch stragglers
+        except ChannelNotFoundError as e:
+            # Channel doesn't exist or invite expired -> rotate to next channel
+            log.warning("channel_not_found_in_run", error=str(e), **self._log_ctx)
+            if self.on_banned:
+                await self.on_banned(
+                    self.account_id, self.channel_id, self.assignment_id,
+                    reason=f"channel_not_found: {e}",
+                )
+
+        except ChannelAccessDeniedError as e:
+            # Already handled inside _ensure_joined (which calls on_banned),
+            # but catch stragglers from other places
             log.warning("channel_error_in_run", error=str(e), **self._log_ctx)
 
         except Exception as e:
