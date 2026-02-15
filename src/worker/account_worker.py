@@ -323,13 +323,10 @@ class AccountWorker:
                 )
 
         except ChannelNotFoundError as e:
-            # Channel doesn't exist or invite expired -> rotate to next channel
+            # Channel doesn't exist or invite expired
+            # Already handled in _ensure_joined (on_banned called there),
+            # just log here if it somehow reaches from other place
             log.warning("channel_not_found_in_run", error=str(e), **self._log_ctx)
-            if self.on_banned:
-                await self.on_banned(
-                    self.account_id, self.channel_id, self.assignment_id,
-                    reason=f"channel_not_found: {e}",
-                )
 
         except ChannelAccessDeniedError as e:
             # Already handled inside _ensure_joined (which calls on_banned),
@@ -628,10 +625,10 @@ class AccountWorker:
             raise
         except ChannelNotFoundError:
             log.warning("channel_not_found_on_join", **self._log_ctx)
-            if self.on_error:
-                await self.on_error(
+            if self.on_banned:
+                await self.on_banned(
                     self.account_id, self.channel_id, self.assignment_id,
-                    error="channel_not_found",
+                    reason="channel_not_found_on_join",
                 )
             raise
 

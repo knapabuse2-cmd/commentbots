@@ -12,6 +12,7 @@ Constraint: each channel can only have ONE active assignment (enforced by DB).
 
 import uuid
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logging import get_logger
@@ -70,28 +71,39 @@ class DistributorService:
             if existing:
                 continue  # Already has a channel
 
-            channel = free_channels[channel_idx]
-
-            # Double-check channel is not occupied (race condition safety)
-            if await self.assignment_repo.is_channel_occupied(channel.id):
+            # Try channels until we find one that's free
+            success = False
+            while channel_idx < len(free_channels):
+                channel = free_channels[channel_idx]
                 channel_idx += 1
-                continue
 
-            await self.assignment_repo.create(
-                campaign_id=campaign_id,
-                account_id=account_id,
-                channel_id=channel.id,
-                status=AssignmentStatus.ACTIVE,
-                state={},
-            )
-            assigned += 1
-            channel_idx += 1
+                try:
+                    async with self.session.begin_nested():
+                        await self.assignment_repo.create(
+                            campaign_id=campaign_id,
+                            account_id=account_id,
+                            channel_id=channel.id,
+                            status=AssignmentStatus.ACTIVE,
+                            state={},
+                        )
+                    success = True
 
-            log.debug(
-                "channel_assigned",
-                account_id=str(account_id)[:8],
-                channel=channel.display_name,
-            )
+                    log.debug(
+                        "channel_assigned",
+                        account_id=str(account_id)[:8],
+                        channel=channel.display_name,
+                    )
+                    break
+
+                except IntegrityError:
+                    log.debug(
+                        "channel_occupied_race_initial",
+                        channel_id=str(channel.id)[:8],
+                    )
+                    continue
+
+            if success:
+                assigned += 1
 
         log.info(
             "distribution_complete",
@@ -112,6 +124,10 @@ class DistributorService:
         Called when an account's current channel is blocked/done.
         Excludes channels where this account was previously blocked.
 
+        Uses savepoints to handle concurrent assignment race conditions:
+        if two accounts try to grab the same channel simultaneously,
+        the unique constraint will reject one — we just try the next channel.
+
         Returns:
             New assignment, or None if no free channels available.
         """
@@ -127,29 +143,41 @@ class DistributorService:
             )
             return None
 
-        # Take the first free channel
-        channel = free_channels[0]
+        # Try each free channel until one succeeds (handles race conditions)
+        for channel in free_channels:
+            try:
+                async with self.session.begin_nested():
+                    assignment = await self.assignment_repo.create(
+                        campaign_id=campaign_id,
+                        account_id=account_id,
+                        channel_id=channel.id,
+                        status=AssignmentStatus.ACTIVE,
+                        state={},
+                    )
 
-        # Final check — channel not occupied
-        if await self.assignment_repo.is_channel_occupied(channel.id):
-            # Extremely unlikely but possible race condition
-            log.warning("channel_occupied_race", channel_id=str(channel.id)[:8])
-            return None
+                log.info(
+                    "next_channel_assigned",
+                    account_id=str(account_id)[:8],
+                    channel=channel.display_name,
+                )
+                return assignment
 
-        assignment = await self.assignment_repo.create(
-            campaign_id=campaign_id,
-            account_id=account_id,
-            channel_id=channel.id,
-            status=AssignmentStatus.ACTIVE,
-            state={},
-        )
+            except IntegrityError:
+                # Channel was grabbed by another account (race condition)
+                log.debug(
+                    "channel_occupied_race_retry",
+                    channel_id=str(channel.id)[:8],
+                    account_id=str(account_id)[:8],
+                )
+                continue
 
-        log.info(
-            "next_channel_assigned",
+        # All free channels were grabbed by others
+        log.warning(
+            "all_free_channels_occupied",
+            campaign_id=str(campaign_id),
             account_id=str(account_id)[:8],
-            channel=channel.display_name,
         )
-        return assignment
+        return None
 
     async def get_distribution_stats(
         self, campaign_id: uuid.UUID

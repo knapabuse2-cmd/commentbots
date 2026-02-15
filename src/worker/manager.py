@@ -459,11 +459,19 @@ class WorkerManager:
                         channel_id=channel_id,
                     )
 
-                    # Try to assign next free channel
+                    # Try to assign next free channel (handles race conditions internally)
                     distributor = DistributorService(session)
-                    new_assignment = await distributor.assign_next_channel(
-                        campaign_id, account_id
-                    )
+                    try:
+                        new_assignment = await distributor.assign_next_channel(
+                            campaign_id, account_id
+                        )
+                    except Exception as assign_err:
+                        log.warning(
+                            "assign_next_channel_error",
+                            error=str(assign_err),
+                            account_id=str(account_id)[:8],
+                        )
+                        new_assignment = None
 
                     if new_assignment:
                         await event_repo.log_event(
