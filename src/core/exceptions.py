@@ -99,3 +99,10 @@ class DatabaseError(CommentBotError):
 
 class EncryptionError(CommentBotError):
     """Session encryption/decryption failed."""
+
+
+# === Access Control Errors ===
+
+
+class OwnershipError(CommentBotError):
+    """Resource does not belong to the requesting user."""

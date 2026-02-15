@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Update
 
+from src.core.config import get_settings
 from src.core.logging import get_logger
 from src.db.repositories.user_repo import UserRepository
 
@@ -42,6 +43,17 @@ class AuthMiddleware(BaseMiddleware):
 
         if user is None:
             return await handler(event, data)
+
+        # Check admin whitelist
+        settings = get_settings()
+        if settings.admin_id_set and user.id not in settings.admin_id_set:
+            log.warning("access_denied", telegram_id=user.id, username=user.username)
+            if isinstance(event, Update):
+                if event.message:
+                    await event.message.answer("⛔ Access denied.")
+                elif event.callback_query:
+                    await event.callback_query.answer("Access denied.", show_alert=True)
+            return
 
         # Get or create user record
         session = data.get("session")

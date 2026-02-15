@@ -22,7 +22,7 @@ from src.bot.keyboards.accounts import (
 )
 from src.bot.keyboards.main import main_menu_keyboard
 from src.bot.states import AccountStates
-from src.core.exceptions import AccountAuthError, AccountBannedError, AccountFloodWaitError
+from src.core.exceptions import AccountAuthError, AccountBannedError, AccountFloodWaitError, OwnershipError
 from src.core.logging import get_logger
 from src.services.account_service import AccountService
 
@@ -144,7 +144,7 @@ async def add_phone_verify_code(
     svc = AccountService(session)
 
     try:
-        await svc.verify_code(account_id, code)
+        await svc.verify_code(account_id, code, owner_id=owner_id)
 
         await state.clear()
         await message.answer(
@@ -185,7 +185,7 @@ async def add_phone_verify_2fa(
     svc = AccountService(session)
 
     try:
-        await svc.verify_2fa(account_id, password)
+        await svc.verify_2fa(account_id, password, owner_id=owner_id)
 
         await state.clear()
         await message.answer(
@@ -327,14 +327,9 @@ async def account_detail(
     account_id = uuid.UUID(callback.data.split(":")[-1])
 
     svc = AccountService(session)
-    account = await svc.get_accounts(owner_id)  # TODO: direct get_by_id check
-
-    # Find the account in the list
-    from src.db.repositories.account_repo import AccountRepository
-    repo = AccountRepository(session)
-    account = await repo.get_by_id(account_id)
-
-    if account is None:
+    try:
+        account = await svc.get_account(account_id, owner_id=owner_id)
+    except OwnershipError:
         await callback.message.edit_text("\u274c \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")  # ❌ Аккаунт не найден
         await callback.answer()
         return
@@ -384,7 +379,12 @@ async def pause_account(
     """Pause an active account."""
     account_id = uuid.UUID(callback.data.split(":")[-1])
     svc = AccountService(session)
-    account = await svc.pause_account(account_id)
+    try:
+        account = await svc.pause_account(account_id, owner_id=owner_id)
+    except OwnershipError:
+        await callback.message.edit_text("\u274c \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        await callback.answer()
+        return
 
     if account:
         await callback.message.edit_text(
@@ -404,7 +404,12 @@ async def resume_account(
     """Resume a paused account."""
     account_id = uuid.UUID(callback.data.split(":")[-1])
     svc = AccountService(session)
-    account = await svc.resume_account(account_id)
+    try:
+        account = await svc.resume_account(account_id, owner_id=owner_id)
+    except OwnershipError:
+        await callback.message.edit_text("\u274c \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        await callback.answer()
+        return
 
     if account:
         await callback.message.edit_text(
@@ -424,7 +429,12 @@ async def delete_account(
     """Delete an account."""
     account_id = uuid.UUID(callback.data.split(":")[-1])
     svc = AccountService(session)
-    deleted = await svc.delete_account(account_id)
+    try:
+        deleted = await svc.delete_account(account_id, owner_id=owner_id)
+    except OwnershipError:
+        await callback.message.edit_text("\u274c \u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        await callback.answer()
+        return
 
     if deleted:
         await callback.message.edit_text(

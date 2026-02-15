@@ -238,7 +238,7 @@ async def stats_campaign_detail(
     event_repo = EventLogRepository(session)
 
     campaign = await campaign_repo.get_with_details(campaign_id)
-    if campaign is None:
+    if campaign is None or campaign.owner_id != owner_id:
         await callback.message.edit_text(
             "\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430",  # ❌ Кампания не найдена
         )
@@ -389,6 +389,16 @@ async def stats_campaign_events(
     parts = callback.data.split(":")
     campaign_id = uuid.UUID(parts[2])
     offset = int(parts[3])
+
+    # Verify campaign ownership
+    campaign_repo = CampaignRepository(session)
+    campaign = await campaign_repo.get_by_id(campaign_id)
+    if campaign is None or campaign.owner_id != owner_id:
+        await callback.message.edit_text(
+            "\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430",  # ❌ Кампания не найдена
+        )
+        await callback.answer()
+        return
 
     event_repo = EventLogRepository(session)
 

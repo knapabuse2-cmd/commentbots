@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # --- Security ---
     session_encryption_key: str
 
+    # --- Access Control ---
+    admin_ids: str = Field(default="", description="Comma-separated Telegram user IDs allowed to use the bot (empty = all allowed)")
+
     # --- Logging ---
     log_level: str = "DEBUG"
     log_pretty: bool = True
@@ -48,6 +51,14 @@ class Settings(BaseSettings):
     worker_health_check_interval: int = Field(default=300, ge=60, description="Seconds between health checks")
     worker_repost_interval: int = Field(default=1800, ge=300, description="Seconds between comment reposts")
     worker_max_connections: int = Field(default=20, ge=1, le=100, description="Max concurrent Telethon clients")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def admin_id_set(self) -> set[int]:
+        """Parse ADMIN_IDS env var into a set of integers."""
+        if not self.admin_ids.strip():
+            return set()
+        return {int(x.strip()) for x in self.admin_ids.split(",") if x.strip()}
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -669,6 +669,42 @@ class WorkerManager:
                 campaign_repo = CampaignRepository(session)
                 event_repo = EventLogRepository(session)
 
+                # Check if this is a channel-level error — treat as ban immediately
+                channel_level_errors = (
+                    "comments disabled",
+                    "comments_disabled",
+                    "invite_hash_expired",
+                    "channel_not_found",
+                )
+                if any(e in error.lower() for e in channel_level_errors):
+                    # This is a channel problem, not account — mark NO_ACCESS immediately
+                    channel_repo = ChannelRepository(session)
+                    await channel_repo.update_by_id(
+                        channel_id, status=ChannelStatus.NO_ACCESS
+                    )
+                    await assign_repo.mark_blocked(assignment_id)
+                    log.info(
+                        "channel_marked_no_access_from_error",
+                        channel_id=str(channel_id)[:8],
+                        error=error,
+                    )
+
+                    # Try to assign next free channel
+                    assignment = await assign_repo.get_by_id(assignment_id)
+                    if assignment:
+                        campaign = await campaign_repo.get_by_id(assignment.campaign_id)
+                        if campaign:
+                            distributor = DistributorService(session)
+                            try:
+                                await distributor.assign_next_channel(
+                                    campaign.id, account_id
+                                )
+                            except Exception:
+                                pass
+
+                    await session.commit()
+                    return
+
                 # Increment fail count
                 fail_count = await assign_repo.increment_fail_count(assignment_id)
 

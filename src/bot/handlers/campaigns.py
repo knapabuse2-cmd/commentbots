@@ -28,7 +28,7 @@ from src.bot.keyboards.campaigns import (
 )
 from src.bot.keyboards.main import main_menu_keyboard
 from src.bot.states import CampaignStates
-from src.core.exceptions import CampaignError
+from src.core.exceptions import CampaignError, OwnershipError
 from src.core.logging import get_logger
 from src.db.models.account import AccountStatus
 from src.db.models.assignment import AssignmentStatus
@@ -159,7 +159,13 @@ async def campaign_detail(
 ) -> None:
     campaign_id = uuid.UUID(callback.data.split(":")[-1])
     svc = CampaignService(session)
-    campaign = await svc.get_campaign_details(campaign_id)
+
+    try:
+        campaign = await svc.get_campaign_details(campaign_id, owner_id=owner_id)
+    except OwnershipError:
+        await callback.message.edit_text("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430")
+        await callback.answer()
+        return
 
     if campaign is None:
         await callback.message.edit_text("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430")
@@ -201,8 +207,20 @@ async def campaign_detail(
 
 
 @router.callback_query(F.data.startswith("camp:msg:"))
-async def set_message_start(callback: CallbackQuery, state: FSMContext) -> None:
+async def set_message_start(
+    callback: CallbackQuery, state: FSMContext,
+    session: AsyncSession, owner_id: uuid.UUID,
+) -> None:
     campaign_id = callback.data.split(":")[-1]
+
+    # Verify ownership before storing in FSM
+    svc = CampaignService(session)
+    try:
+        await svc.get_campaign(uuid.UUID(campaign_id), owner_id=owner_id)
+    except OwnershipError:
+        await callback.answer("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430", show_alert=True)
+        return
+
     await state.update_data(campaign_id=campaign_id)
     await state.set_state(CampaignStates.waiting_message)
     await callback.message.edit_text(
@@ -279,7 +297,7 @@ async def set_message_receive(
         )
         return
 
-    await svc.set_message(campaign_id, text_content, entities_list, photo_id)
+    await svc.set_message(campaign_id, text_content, entities_list, photo_id, owner_id=owner_id)
     await state.clear()
 
     photo_label = " + \U0001f4f7 \u0444\u043e\u0442\u043e" if photo_id else ""
@@ -298,8 +316,20 @@ async def set_message_receive(
 
 
 @router.callback_query(F.data.startswith("camp:add_channels:"))
-async def add_channels_start(callback: CallbackQuery, state: FSMContext) -> None:
+async def add_channels_start(
+    callback: CallbackQuery, state: FSMContext,
+    session: AsyncSession, owner_id: uuid.UUID,
+) -> None:
     campaign_id = callback.data.split(":")[-1]
+
+    # Verify ownership before storing in FSM
+    svc = CampaignService(session)
+    try:
+        await svc.get_campaign(uuid.UUID(campaign_id), owner_id=owner_id)
+    except OwnershipError:
+        await callback.answer("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430", show_alert=True)
+        return
+
     await state.update_data(campaign_id=campaign_id)
     await state.set_state(CampaignStates.waiting_channels)
     await callback.message.edit_text(
@@ -349,7 +379,7 @@ async def add_channels_receive(
         return
 
     ch_svc = ChannelService(session)
-    added, skipped, errors = await ch_svc.add_channels_bulk(campaign_id, links_text)
+    added, skipped, errors = await ch_svc.add_channels_bulk(campaign_id, links_text, owner_id=owner_id)
 
     await state.clear()
 
@@ -385,8 +415,13 @@ async def view_channels(
     offset = int(parts[3])
 
     ch_svc = ChannelService(session)
-    channels = await ch_svc.get_channels(campaign_id, offset=offset, limit=PAGE_SIZE)
-    total = await ch_svc.count_channels(campaign_id)
+    try:
+        channels = await ch_svc.get_channels(campaign_id, offset=offset, limit=PAGE_SIZE, owner_id=owner_id)
+        total = await ch_svc.count_channels(campaign_id, owner_id=owner_id)
+    except OwnershipError:
+        await callback.message.edit_text("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430")
+        await callback.answer()
+        return
 
     if not channels:
         await callback.message.edit_text(
@@ -439,6 +474,15 @@ async def manage_accounts(
     owner_id: uuid.UUID,
 ) -> None:
     campaign_id = uuid.UUID(callback.data.split(":")[-1])
+
+    # Verify campaign ownership
+    svc = CampaignService(session)
+    try:
+        await svc.get_campaign(campaign_id, owner_id=owner_id)
+    except OwnershipError:
+        await callback.answer("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430", show_alert=True)
+        return
+
     # Store campaign_id in FSM state so account toggle buttons don't need it
     await state.update_data(acc_campaign_id=str(campaign_id))
 
@@ -480,6 +524,15 @@ async def add_account_to_campaign(
     data = await state.get_data()
     campaign_id = uuid.UUID(data["acc_campaign_id"])
     account_id = uuid.UUID(callback.data.split(":")[-1])
+
+    # Verify ownership of both campaign and account
+    from src.services.account_service import AccountService
+    try:
+        await CampaignService(session).get_campaign(campaign_id, owner_id=owner_id)
+        await AccountService(session).get_account(account_id, owner_id=owner_id)
+    except OwnershipError:
+        await callback.answer("\u274c \u041d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e", show_alert=True)
+        return
 
     # Create a dummy assignment (no channel yet — will be assigned by distributor)
     ch_svc = ChannelService(session)
@@ -559,6 +612,13 @@ async def remove_account_from_campaign(
     campaign_id = uuid.UUID(data["acc_campaign_id"])
     account_id = uuid.UUID(callback.data.split(":")[-1])
 
+    # Verify ownership
+    try:
+        await CampaignService(session).get_campaign(campaign_id, owner_id=owner_id)
+    except OwnershipError:
+        await callback.answer("\u274c \u041d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e", show_alert=True)
+        return
+
     # Remove all assignments for this account in this campaign
     assign_repo = AssignmentRepository(session)
     assignments = await assign_repo.get_by_account_and_campaign(account_id, campaign_id)
@@ -616,8 +676,12 @@ async def distribute_channels(
         return
 
     dist_svc = DistributorService(session)
-    assigned = await dist_svc.distribute_initial(campaign_id, account_ids)
-    stats = await dist_svc.get_distribution_stats(campaign_id)
+    try:
+        assigned = await dist_svc.distribute_initial(campaign_id, account_ids, owner_id=owner_id)
+        stats = await dist_svc.get_distribution_stats(campaign_id, owner_id=owner_id)
+    except OwnershipError:
+        await callback.answer("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430", show_alert=True)
+        return
 
     await callback.message.edit_text(
         f"\U0001f504 <b>\u0420\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u043e</b>\n\n"
@@ -652,6 +716,9 @@ async def start_campaign(
             reply_markup=campaign_detail_keyboard(campaign.id, campaign.status.value),
             parse_mode="HTML",
         )
+    except OwnershipError:
+        await callback.answer("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430", show_alert=True)
+        return
     except CampaignError as e:
         await callback.answer(f"\u274c {e.message}", show_alert=True)
         return
@@ -667,7 +734,12 @@ async def pause_campaign(
 ) -> None:
     campaign_id = uuid.UUID(callback.data.split(":")[-1])
     svc = CampaignService(session)
-    campaign = await svc.pause_campaign(campaign_id, owner_id)
+
+    try:
+        campaign = await svc.pause_campaign(campaign_id, owner_id)
+    except OwnershipError:
+        await callback.answer("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430", show_alert=True)
+        return
 
     if campaign:
         await callback.message.edit_text(
@@ -688,11 +760,14 @@ async def delete_campaign(
     svc = CampaignService(session)
 
     try:
-        deleted = await svc.delete_campaign(campaign_id)
+        deleted = await svc.delete_campaign(campaign_id, owner_id=owner_id)
         if deleted:
             await callback.message.edit_text("\U0001f5d1 \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u0443\u0434\u0430\u043b\u0435\u043d\u0430")
         else:
             await callback.message.edit_text("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430")
+    except OwnershipError:
+        await callback.answer("\u274c \u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430", show_alert=True)
+        return
     except CampaignError as e:
         await callback.answer(f"\u274c {e.message}", show_alert=True)
         return

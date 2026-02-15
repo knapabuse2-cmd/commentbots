@@ -12,7 +12,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.exceptions import CampaignError, CampaignNoAccountsError
+from src.core.exceptions import CampaignError, CampaignNoAccountsError, OwnershipError
 from src.core.logging import get_logger
 from src.db.models.account import AccountModel, AccountStatus
 from src.db.models.campaign import CampaignModel, CampaignStatus
@@ -33,6 +33,19 @@ class CampaignService:
         self.account_repo = AccountRepository(session)
         self.event_repo = EventLogRepository(session)
 
+    # ---- Ownership ----
+
+    async def _verify_ownership(
+        self, campaign_id: uuid.UUID, owner_id: uuid.UUID | None
+    ) -> CampaignModel:
+        """Fetch campaign and verify ownership. Returns campaign or raises."""
+        campaign = await self.repo.get_by_id(campaign_id)
+        if campaign is None:
+            raise OwnershipError("Campaign not found")
+        if owner_id is not None and campaign.owner_id != owner_id:
+            raise OwnershipError("Campaign not found")
+        return campaign
+
     # ---- CRUD ----
 
     async def create_campaign(
@@ -47,12 +60,17 @@ class CampaignService:
         log.info("campaign_created", campaign_id=str(campaign.id), name=name)
         return campaign
 
-    async def get_campaign(self, campaign_id: uuid.UUID) -> CampaignModel | None:
-        """Get campaign by ID."""
-        return await self.repo.get_by_id(campaign_id)
+    async def get_campaign(
+        self, campaign_id: uuid.UUID, owner_id: uuid.UUID | None = None
+    ) -> CampaignModel | None:
+        """Get campaign by ID (with optional ownership check)."""
+        return await self._verify_ownership(campaign_id, owner_id)
 
-    async def get_campaign_details(self, campaign_id: uuid.UUID) -> CampaignModel | None:
+    async def get_campaign_details(
+        self, campaign_id: uuid.UUID, owner_id: uuid.UUID | None = None
+    ) -> CampaignModel | None:
         """Get campaign with channels and assignments loaded."""
+        await self._verify_ownership(campaign_id, owner_id)
         return await self.repo.get_with_details(campaign_id)
 
     async def get_campaigns(
@@ -74,10 +92,12 @@ class CampaignService:
         """Count campaigns for an owner."""
         return await self.repo.count_by_owner(owner_id, status=status)
 
-    async def delete_campaign(self, campaign_id: uuid.UUID) -> bool:
+    async def delete_campaign(
+        self, campaign_id: uuid.UUID, owner_id: uuid.UUID | None = None
+    ) -> bool:
         """Delete a campaign and all related data (channels, assignments)."""
-        campaign = await self.repo.get_by_id(campaign_id)
-        if campaign and campaign.status == CampaignStatus.ACTIVE:
+        campaign = await self._verify_ownership(campaign_id, owner_id)
+        if campaign.status == CampaignStatus.ACTIVE:
             raise CampaignError("Cannot delete an active campaign — pause it first")
         return await self.repo.delete(campaign_id)
 
@@ -89,6 +109,7 @@ class CampaignService:
         text: str,
         entities: list | None = None,
         photo_id: str | None = None,
+        owner_id: uuid.UUID | None = None,
     ) -> CampaignModel | None:
         """
         Set the campaign message template.
@@ -98,7 +119,9 @@ class CampaignService:
             entities: Telegram MessageEntity list as dicts (serialized).
                       Stored as JSONB, reconstructed into Telethon objects by worker.
             photo_id: Telegram file_id for attached photo (if any).
+            owner_id: If provided, verifies the campaign belongs to this user.
         """
+        await self._verify_ownership(campaign_id, owner_id)
         campaign = await self.repo.update_by_id(
             campaign_id,
             message_text=text,
@@ -125,6 +148,7 @@ class CampaignService:
 
         Validates that campaign has a message, channels, and accounts.
         """
+        await self._verify_ownership(campaign_id, owner_id)
         campaign = await self.repo.get_with_details(campaign_id)
         if campaign is None:
             raise CampaignError("Campaign not found")
@@ -160,6 +184,7 @@ class CampaignService:
         self, campaign_id: uuid.UUID, owner_id: uuid.UUID
     ) -> CampaignModel | None:
         """Pause a running campaign."""
+        await self._verify_ownership(campaign_id, owner_id)
         campaign = await self.repo.update_by_id(
             campaign_id, status=CampaignStatus.PAUSED
         )
@@ -176,6 +201,7 @@ class CampaignService:
         self, campaign_id: uuid.UUID, owner_id: uuid.UUID
     ) -> CampaignModel | None:
         """Mark campaign as completed."""
+        await self._verify_ownership(campaign_id, owner_id)
         campaign = await self.repo.update_by_id(
             campaign_id, status=CampaignStatus.COMPLETED
         )
@@ -191,9 +217,10 @@ class CampaignService:
     # ---- Account Assignment ----
 
     async def get_campaign_accounts(
-        self, campaign_id: uuid.UUID
+        self, campaign_id: uuid.UUID, owner_id: uuid.UUID | None = None
     ) -> list[AccountModel]:
         """Get all accounts assigned to a campaign via assignments."""
+        await self._verify_ownership(campaign_id, owner_id)
         campaign = await self.repo.get_with_details(campaign_id)
         if campaign is None:
             return []

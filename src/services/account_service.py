@@ -16,7 +16,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.exceptions import AccountAuthError, AccountBannedError
+from src.core.exceptions import AccountAuthError, AccountBannedError, OwnershipError
 from src.core.logging import get_logger
 from src.db.models.account import AccountModel, AccountStatus
 from src.db.repositories.account_repo import AccountRepository
@@ -42,6 +42,25 @@ class AccountService:
         self.session = session
         self.repo = AccountRepository(session)
         self.event_repo = EventLogRepository(session)
+
+    # ---- Ownership ----
+
+    async def _verify_ownership(
+        self, account_id: uuid.UUID, owner_id: uuid.UUID | None
+    ) -> AccountModel:
+        """Fetch account and verify ownership. Returns account or raises."""
+        account = await self.repo.get_by_id(account_id)
+        if account is None:
+            raise OwnershipError("Account not found")
+        if owner_id is not None and account.owner_id != owner_id:
+            raise OwnershipError("Account not found")
+        return account
+
+    async def get_account(
+        self, account_id: uuid.UUID, owner_id: uuid.UUID | None = None
+    ) -> AccountModel:
+        """Get a single account by ID with ownership check."""
+        return await self._verify_ownership(account_id, owner_id)
 
     # ---- Authorization Flow ----
 
@@ -101,6 +120,7 @@ class AccountService:
         account_id: uuid.UUID,
         code: str,
         proxy: dict | None = None,
+        owner_id: uuid.UUID | None = None,
     ) -> bool:
         """
         Verify SMS code. Returns True if fully authorized, raises if 2FA needed.
@@ -108,9 +128,7 @@ class AccountService:
         Raises:
             AccountAuthError: With needs_2fa=True in context if 2FA is required.
         """
-        account = await self.repo.get_by_id(account_id)
-        if account is None:
-            raise AccountAuthError("Account not found")
+        account = await self._verify_ownership(account_id, owner_id)
 
         # Restore the session that was used to send the auth code.
         # The auth_key must match or Telegram will reject the code.
@@ -164,11 +182,10 @@ class AccountService:
         account_id: uuid.UUID,
         password: str,
         proxy: dict | None = None,
+        owner_id: uuid.UUID | None = None,
     ) -> bool:
         """Complete 2FA verification."""
-        account = await self.repo.get_by_id(account_id)
-        if account is None:
-            raise AccountAuthError("Account not found")
+        account = await self._verify_ownership(account_id, owner_id)
 
         # Restore partial session
         session_str = decrypt_session(account.session_data)
@@ -275,23 +292,33 @@ class AccountService:
         """Count accounts for an owner."""
         return await self.repo.count_by_owner(owner_id, status=status)
 
-    async def pause_account(self, account_id: uuid.UUID) -> AccountModel | None:
+    async def pause_account(
+        self, account_id: uuid.UUID, owner_id: uuid.UUID | None = None
+    ) -> AccountModel | None:
         """Pause an active account."""
+        await self._verify_ownership(account_id, owner_id)
         return await self.repo.update_by_id(account_id, status=AccountStatus.PAUSED)
 
-    async def resume_account(self, account_id: uuid.UUID) -> AccountModel | None:
+    async def resume_account(
+        self, account_id: uuid.UUID, owner_id: uuid.UUID | None = None
+    ) -> AccountModel | None:
         """Resume a paused account."""
-        account = await self.repo.get_by_id(account_id)
-        if account and account.session_data:
+        account = await self._verify_ownership(account_id, owner_id)
+        if account.session_data:
             return await self.repo.update_by_id(account_id, status=AccountStatus.ACTIVE)
         return None
 
-    async def delete_account(self, account_id: uuid.UUID) -> bool:
+    async def delete_account(
+        self, account_id: uuid.UUID, owner_id: uuid.UUID | None = None
+    ) -> bool:
         """Delete an account and all its assignments."""
+        await self._verify_ownership(account_id, owner_id)
         return await self.repo.delete(account_id)
 
     async def bind_proxy(
-        self, account_id: uuid.UUID, proxy_id: uuid.UUID | None
+        self, account_id: uuid.UUID, proxy_id: uuid.UUID | None,
+        owner_id: uuid.UUID | None = None,
     ) -> AccountModel | None:
         """Bind or unbind a proxy to an account."""
+        await self._verify_ownership(account_id, owner_id)
         return await self.repo.update_by_id(account_id, proxy_id=proxy_id)

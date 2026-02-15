@@ -15,10 +15,12 @@ import uuid
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.exceptions import OwnershipError
 from src.core.logging import get_logger
 from src.db.models.assignment import AssignmentModel, AssignmentStatus
 from src.db.models.channel import ChannelStatus
 from src.db.repositories.assignment_repo import AssignmentRepository
+from src.db.repositories.campaign_repo import CampaignRepository
 from src.db.repositories.channel_repo import ChannelRepository
 
 log = get_logger(__name__)
@@ -31,11 +33,23 @@ class DistributorService:
         self.session = session
         self.assignment_repo = AssignmentRepository(session)
         self.channel_repo = ChannelRepository(session)
+        self.campaign_repo = CampaignRepository(session)
+
+    async def _verify_campaign_ownership(
+        self, campaign_id: uuid.UUID, owner_id: uuid.UUID | None
+    ) -> None:
+        """Verify campaign belongs to owner."""
+        if owner_id is None:
+            return
+        campaign = await self.campaign_repo.get_by_id(campaign_id)
+        if campaign is None or campaign.owner_id != owner_id:
+            raise OwnershipError("Campaign not found")
 
     async def distribute_initial(
         self,
         campaign_id: uuid.UUID,
         account_ids: list[uuid.UUID],
+        owner_id: uuid.UUID | None = None,
     ) -> int:
         """
         Initial distribution: assign one free channel to each account.
@@ -50,6 +64,8 @@ class DistributorService:
         Returns:
             Number of assignments created.
         """
+        await self._verify_campaign_ownership(campaign_id, owner_id)
+
         # Get free channels (not occupied by any account)
         free_channels = await self.channel_repo.get_free_channels(campaign_id)
 
@@ -180,7 +196,8 @@ class DistributorService:
         return None
 
     async def get_distribution_stats(
-        self, campaign_id: uuid.UUID
+        self, campaign_id: uuid.UUID,
+        owner_id: uuid.UUID | None = None,
     ) -> dict:
         """
         Get distribution statistics for a campaign.
@@ -194,6 +211,7 @@ class DistributorService:
                 "active_assignments": int,
             }
         """
+        await self._verify_campaign_ownership(campaign_id, owner_id)
         total = await self.channel_repo.count_by_campaign(campaign_id)
         active = await self.assignment_repo.count_active_for_campaign(campaign_id)
         free = len(await self.channel_repo.get_free_channels(campaign_id))

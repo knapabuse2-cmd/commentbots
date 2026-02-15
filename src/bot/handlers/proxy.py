@@ -221,7 +221,7 @@ async def proxy_detail(
     repo = ProxyRepository(session)
     proxy = await repo.get_by_id(proxy_id)
 
-    if proxy is None:
+    if proxy is None or proxy.owner_id != owner_id:
         await callback.message.edit_text(
             "\u274c \u041f\u0440\u043e\u043a\u0441\u0438 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e",  # ❌ Прокси не найдено
         )
@@ -271,6 +271,15 @@ async def delete_proxy(
     """Delete a proxy (unlinks from accounts first)."""
     proxy_id = uuid.UUID(callback.data.split(":")[-1])
     repo = ProxyRepository(session)
+
+    # Verify ownership before deleting
+    proxy = await repo.get_by_id(proxy_id)
+    if proxy is None or proxy.owner_id != owner_id:
+        await callback.message.edit_text(
+            "\u274c \u041f\u0440\u043e\u043a\u0441\u0438 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e",  # ❌ Прокси не найдено
+        )
+        await callback.answer()
+        return
 
     # Unlink from all accounts
     from src.db.models.account import AccountModel
