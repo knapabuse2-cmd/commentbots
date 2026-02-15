@@ -522,15 +522,30 @@ async def post_comment(
         )
 
     except Exception as e:
+        # Catch ForbiddenError variants (CHAT_SEND_PLAIN_FORBIDDEN, etc.)
+        error_name = type(e).__name__
+        error_str = str(e)
+        if "Forbidden" in error_name or "FORBIDDEN" in error_str:
+            log.warning(
+                "comment_post_forbidden",
+                channel=str(channel_identifier),
+                error=error_str,
+            )
+            return CommentResult(
+                success=False,
+                error=f"Forbidden: {error_str}",
+                is_banned=True,
+            )
+
         log.error(
             "comment_post_unexpected_error",
             channel=str(channel_identifier),
-            error=str(e),
-            error_type=type(e).__name__,
+            error=error_str,
+            error_type=error_name,
         )
         return CommentResult(
             success=False,
-            error=f"Unexpected: {type(e).__name__}: {e}",
+            error=f"Unexpected: {error_name}: {e}",
         )
 
 
