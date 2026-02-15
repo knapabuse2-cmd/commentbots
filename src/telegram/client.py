@@ -608,6 +608,11 @@ async def copy_channel_profile(
     """
     Copy a channel's name and avatar to the account's profile.
 
+    IMPORTANT: For private channels (invite links), get_entity may resolve
+    to the discussion group instead of the channel itself. We use
+    GetFullChannelRequest to ensure we get the actual channel entity
+    with the correct name and photo.
+
     Args:
         channel_identifier: Channel username or entity.
         copy_name: Whether to copy the channel title as first_name.
@@ -621,19 +626,37 @@ async def copy_channel_profile(
 
     try:
         entity = await client.get_entity(channel_identifier)
+
+        # get_entity on invite links may return the discussion group (chat)
+        # instead of the channel. Use GetFullChannelRequest to get the real
+        # channel with correct title and photo.
+        try:
+            full_result = await client(GetFullChannelRequest(entity))
+            # Use the entity from the full result — this is the actual channel
+            channel_entity = full_result.chats[0]  # First chat is the channel itself
+            log.debug(
+                "profile_copy_resolved_channel",
+                channel=str(channel_identifier),
+                title=channel_entity.title,
+            )
+        except Exception:
+            # Fallback to original entity if GetFullChannelRequest fails
+            channel_entity = entity
+
     except Exception as e:
         result["error"] = f"Cannot get channel entity: {e}"
         return result
 
-    # Copy name
+    # Copy name (from the CHANNEL, not discussion group)
     if copy_name:
         try:
+            name = channel_entity.title[:64]  # Telegram limit
             await client(UpdateProfileRequest(
-                first_name=entity.title[:64],  # Telegram limit
+                first_name=name,
                 last_name="",
             ))
             result["name_copied"] = True
-            log.debug("profile_name_copied", channel=str(channel_identifier), name=entity.title[:64])
+            log.debug("profile_name_copied", channel=str(channel_identifier), name=name)
             await asyncio.sleep(action_delay)
         except FloodWaitError as e:
             result["error"] = f"Flood wait on name update: {e.seconds}s"
@@ -642,13 +665,13 @@ async def copy_channel_profile(
             result["error"] = f"Name copy failed: {e}"
             log.warning("profile_name_copy_failed", error=str(e))
 
-    # Copy avatar
+    # Copy avatar (from the CHANNEL, not discussion group)
     if copy_avatar:
         try:
             # Download channel photo to temp file
             photo_path = await client.download_profile_photo(
-                entity,
-                file=os.path.join(tempfile.gettempdir(), f"avatar_{entity.id}.jpg"),
+                channel_entity,
+                file=os.path.join(tempfile.gettempdir(), f"avatar_{channel_entity.id}.jpg"),
                 download_big=True,
             )
 
@@ -675,7 +698,7 @@ async def copy_channel_profile(
 
             # Upload new avatar
             uploaded = await client.upload_file(photo_path)
-            await client(UploadProfilePhotoRequest(uploaded))
+            await client(UploadProfilePhotoRequest(file=uploaded))
             result["avatar_copied"] = True
             log.debug("profile_avatar_copied", channel=str(channel_identifier))
 
