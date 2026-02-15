@@ -763,7 +763,28 @@ class WorkerManager:
             reason=reason,
         )
 
-        # Remove worker from tracking
+        # Stop ALL workers for this account (it may have multiple assignments)
+        to_stop = [
+            (aid, w)
+            for aid, w in list(self._workers.items())
+            if w.account_id == account_id
+        ]
+        for aid, worker in to_stop:
+            self._workers.pop(aid, None)
+            task = self._tasks.pop(aid, None)
+            if task and not task.done():
+                task.cancel()
+            try:
+                await worker.stop()
+            except Exception:
+                pass
+            log.info(
+                "stopped_worker_for_banned_account",
+                account_id=str(account_id)[:8],
+                assignment_id=str(aid)[:8],
+            )
+
+        # Also remove the triggering assignment if not caught above
         self._workers.pop(assignment_id, None)
         self._tasks.pop(assignment_id, None)
 
@@ -779,8 +800,21 @@ class WorkerManager:
                     account_id, status=AccountStatus.ERROR
                 )
 
-                # Mark assignment as completed (account can't work)
-                await assign_repo.mark_completed(assignment_id)
+                # Mark ALL active/idle assignments of this account as completed
+                from sqlalchemy import update as sa_update
+                from src.db.models.assignment import AssignmentModel
+                stmt = (
+                    sa_update(AssignmentModel)
+                    .where(
+                        AssignmentModel.account_id == account_id,
+                        AssignmentModel.status.in_([
+                            AssignmentStatus.ACTIVE,
+                            AssignmentStatus.IDLE,
+                        ]),
+                    )
+                    .values(status=AssignmentStatus.COMPLETED)
+                )
+                await session.execute(stmt)
 
                 # Log and notify
                 assignment = await assign_repo.get_by_id(assignment_id)
