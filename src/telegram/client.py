@@ -499,7 +499,9 @@ async def post_comment(
         return CommentResult(
             success=False,
             error="No write access — need to join discussion group",
-            is_banned=True,  # Treat as permanent for this channel
+            is_banned=False,
+            should_retry=True,
+            retry_after=0,  # signal to re-join discussion group
         )
 
     except MsgIdInvalidError:
@@ -543,6 +545,21 @@ async def post_comment(
 
         # Catch ForbiddenError variants (CHAT_SEND_PLAIN_FORBIDDEN, etc.)
         if "Forbidden" in error_name or "FORBIDDEN" in error_str:
+            # Special case: need to join discussion group first — NOT a ban
+            if "join the discussion group" in error_str.lower():
+                log.warning(
+                    "comment_post_forbidden",
+                    channel=str(channel_identifier),
+                    error=error_str,
+                )
+                return CommentResult(
+                    success=False,
+                    error=f"Forbidden: {error_str}",
+                    is_banned=False,
+                    should_retry=True,
+                    retry_after=0,  # signal to re-join discussion group
+                )
+
             log.warning(
                 "comment_post_forbidden",
                 channel=str(channel_identifier),

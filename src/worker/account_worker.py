@@ -362,6 +362,7 @@ class AccountWorker:
         Interleaves health checks every health_check_interval.
         """
         last_health_check = datetime.now(timezone.utc)
+        discussion_rejoin_attempts = 0
 
         while self._running:
             # -- HEALTH CHECK --
@@ -419,6 +420,37 @@ class AccountWorker:
                     return
 
                 if result.should_retry:
+                    # Special case: need to re-join discussion group
+                    if result.retry_after == 0 and "discussion group" in (result.error or ""):
+                        discussion_rejoin_attempts += 1
+                        if discussion_rejoin_attempts > 2:
+                            # Gave up — treat as ban
+                            log.warning("discussion_rejoin_gave_up", **self._log_ctx)
+                            if self.on_banned:
+                                await self.on_banned(
+                                    self.account_id, self.channel_id, self.assignment_id,
+                                    reason=result.error,
+                                )
+                            return
+
+                        log.info("re_joining_discussion_group", attempt=discussion_rejoin_attempts, **self._log_ctx)
+                        try:
+                            await self._ensure_joined()
+                            await self._sleep(self.action_delay)
+                        except Exception as e:
+                            log.warning(
+                                "re_join_discussion_failed",
+                                error=str(e),
+                                **self._log_ctx,
+                            )
+                            if self.on_banned:
+                                await self.on_banned(
+                                    self.account_id, self.channel_id, self.assignment_id,
+                                    reason=result.error,
+                                )
+                            return
+                        continue  # Retry posting after re-join
+
                     retry_sec = result.retry_after + random.randint(5, 15)
                     log.info("flood_wait_sleeping", seconds=retry_sec, **self._log_ctx)
                     await self._sleep(retry_sec)
@@ -428,6 +460,7 @@ class AccountWorker:
                     self._current_comment_id = result.message_id
                     self._current_post_id = post_id
                     self._flood_retries = 0  # Reset flood counter on success
+                    discussion_rejoin_attempts = 0  # Reset rejoin counter on success
 
                     if self.on_comment_posted:
                         await self.on_comment_posted(
