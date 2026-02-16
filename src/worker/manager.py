@@ -719,21 +719,27 @@ class WorkerManager:
                 campaign_repo = CampaignRepository(session)
                 event_repo = EventLogRepository(session)
 
-                # Check if this is a channel-level error — treat as ban immediately
-                channel_level_errors = (
+                # Channel-level errors: 100% dead channel → mark NO_ACCESS immediately
+                instant_no_access_errors = (
                     "comments disabled",
                     "comments_disabled",
                     "invite_hash_expired",
-                    "channel_not_found",
-                    "channel is private",
-                    "cannot cast inputpeeruser",
                     "username is unacceptable",
                     "nobody is using this username",
                     "no user has",
                 )
-                if any(e in error.lower() for e in channel_level_errors):
-                    # This is a channel problem, not account — mark NO_ACCESS immediately
-                    channel_repo = ChannelRepository(session)
+                # Errors that MIGHT be channel-level, need 2+ accounts to confirm
+                threshold_errors = (
+                    "channel_not_found",
+                    "channel is private",
+                    "cannot cast inputpeeruser",
+                )
+
+                error_lower = error.lower()
+                channel_repo = ChannelRepository(session)
+
+                if any(e in error_lower for e in instant_no_access_errors):
+                    # 100% channel problem — mark NO_ACCESS immediately
                     await channel_repo.update_by_id(
                         channel_id, status=ChannelStatus.NO_ACCESS
                     )
@@ -743,6 +749,48 @@ class WorkerManager:
                         channel_id=str(channel_id)[:8],
                         error=error,
                     )
+
+                    # Try to assign next free channel
+                    assignment = await assign_repo.get_by_id(assignment_id)
+                    if assignment:
+                        campaign = await campaign_repo.get_by_id(assignment.campaign_id)
+                        if campaign:
+                            distributor = DistributorService(session)
+                            try:
+                                await distributor.assign_next_channel(
+                                    campaign.id, account_id
+                                )
+                            except Exception:
+                                pass
+
+                    await session.commit()
+                    return
+                elif any(e in error_lower for e in threshold_errors):
+                    # Might be channel or account problem — block assignment,
+                    # mark NO_ACCESS only if 2+ accounts failed
+                    await assign_repo.mark_blocked(assignment_id)
+
+                    from src.db.models.assignment import AssignmentModel
+                    from sqlalchemy import func as sa_func, select as sa_select
+                    blocked_stmt = (
+                        sa_select(sa_func.count(sa_func.distinct(AssignmentModel.account_id)))
+                        .where(
+                            AssignmentModel.channel_id == channel_id,
+                            AssignmentModel.status == AssignmentStatus.BLOCKED,
+                        )
+                    )
+                    blocked_result = await session.execute(blocked_stmt)
+                    blocked_count = blocked_result.scalar() or 0
+
+                    if blocked_count >= 2:
+                        await channel_repo.update_by_id(
+                            channel_id, status=ChannelStatus.NO_ACCESS
+                        )
+                        log.info(
+                            "channel_marked_no_access_from_error",
+                            channel_id=str(channel_id)[:8],
+                            error=f"{blocked_count} accounts failed: {error[:80]}",
+                        )
 
                     # Try to assign next free channel
                     assignment = await assign_repo.get_by_id(assignment_id)
