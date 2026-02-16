@@ -19,13 +19,17 @@ from src.db.base import Base
 
 # Patterns for parsing Telegram channel links
 _PATTERNS = [
-    # t.me/username or t.me/+hash (invite)
-    re.compile(r"(?:https?://)?t\.me/\+([a-zA-Z0-9_-]+)"),       # private invite
-    re.compile(r"(?:https?://)?t\.me/([a-zA-Z][a-zA-Z0-9_]{3,})"),  # public
+    # t.me/+hash (new invite format)
+    re.compile(r"(?:https?://)?t\.me/\+([a-zA-Z0-9_-]+)"),
+    # t.me/joinchat/hash (old invite format)
+    re.compile(r"(?:https?://)?t\.me/joinchat/([a-zA-Z0-9_-]+)"),
+    # t.me/username (public)
+    re.compile(r"(?:https?://)?t\.me/([a-zA-Z][a-zA-Z0-9_]{3,})"),
     # @username
     re.compile(r"@([a-zA-Z][a-zA-Z0-9_]{3,})"),
-    # Full URL formats
+    # telegram.me formats
     re.compile(r"(?:https?://)?telegram\.me/\+([a-zA-Z0-9_-]+)"),
+    re.compile(r"(?:https?://)?telegram\.me/joinchat/([a-zA-Z0-9_-]+)"),
     re.compile(r"(?:https?://)?telegram\.me/([a-zA-Z][a-zA-Z0-9_]{3,})"),
 ]
 
@@ -114,8 +118,12 @@ class ChannelModel(Base):
             match = pattern.match(raw)
             if match:
                 value = match.group(1)
-                # If the original link had '+', it's a private invite
-                if "+{}".format(value) in raw or "/+{}".format(value) in raw:
+                # If the original link had '+' or 'joinchat/', it's a private invite
+                if (
+                    "+{}".format(value) in raw
+                    or "/+{}".format(value) in raw
+                    or "joinchat/" in raw.lower()
+                ):
                     return None, value
                 return value, None
 

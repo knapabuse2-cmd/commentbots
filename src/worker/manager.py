@@ -700,6 +700,9 @@ class WorkerManager:
                     "channel_not_found",
                     "channel is private",
                     "cannot cast inputpeeruser",
+                    "username is unacceptable",
+                    "nobody is using this username",
+                    "no user has",
                 )
                 if any(e in error.lower() for e in channel_level_errors):
                     # This is a channel problem, not account — mark NO_ACCESS immediately
