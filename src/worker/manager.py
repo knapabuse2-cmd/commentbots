@@ -500,12 +500,11 @@ class WorkerManager:
 
                 # If the problem is with the CHANNEL (not account),
                 # mark channel as NO_ACCESS so no other account gets it
-                channel_level_reasons = (
-                    "channel_not_found",
+                instant_dead_reasons = (
                     "comments_disabled",
                     "invite_hash_expired",
                 )
-                if any(r in reason for r in channel_level_reasons):
+                if any(r in reason for r in instant_dead_reasons):
                     await channel_repo.update_by_id(
                         channel_id, status=ChannelStatus.NO_ACCESS
                     )
