@@ -544,21 +544,34 @@ async def add_account_to_campaign(
 
     # Find a free channel for this account
     from src.db.repositories.channel_repo import ChannelRepository
+    from sqlalchemy.exc import IntegrityError
+
     channel_repo = ChannelRepository(session)
     free = await channel_repo.get_free_channels(campaign_id, exclude_account_id=account_id)
 
     assign_repo = AssignmentRepository(session)
 
+    assigned = False
     if free:
-        await assign_repo.create(
-            campaign_id=campaign_id,
-            account_id=account_id,
-            channel_id=free[0].id,
-            status=AssignmentStatus.ACTIVE,
-            state={},
-        )
-    else:
-        # No free channel — create idle assignment with first channel (will be reassigned)
+        # Try each free channel — another account may grab it between query and insert
+        for ch in free:
+            try:
+                async with session.begin_nested():
+                    await assign_repo.create(
+                        campaign_id=campaign_id,
+                        account_id=account_id,
+                        channel_id=ch.id,
+                        status=AssignmentStatus.ACTIVE,
+                        state={},
+                    )
+                assigned = True
+                break
+            except IntegrityError:
+                # Channel was grabbed by another account (race condition) — try next
+                continue
+
+    if not assigned:
+        # No free channel — create idle assignment (will be reassigned by distributor)
         await assign_repo.create(
             campaign_id=campaign_id,
             account_id=account_id,

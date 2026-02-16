@@ -152,7 +152,7 @@ class DistributorService:
         )
 
         if not free_channels:
-            log.warning(
+            log.debug(
                 "no_free_channels_for_account",
                 campaign_id=str(campaign_id),
                 account_id=str(account_id)[:8],
@@ -188,7 +188,7 @@ class DistributorService:
                 continue
 
         # All free channels were grabbed by others
-        log.warning(
+        log.debug(
             "all_free_channels_occupied",
             campaign_id=str(campaign_id),
             account_id=str(account_id)[:8],
