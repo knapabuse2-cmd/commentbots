@@ -514,28 +514,43 @@ class WorkerManager:
                         channel_id=str(channel_id)[:8],
                         reason=reason,
                     )
-                elif "access_denied" in reason:
-                    # If multiple accounts can't join the same channel,
-                    # it's likely a channel-level problem (private/deleted)
+                else:
+                    # For all other bans (access_denied, Forbidden, no write access, etc.)
+                    # check if multiple accounts failed AND no one is currently working on it
                     from src.db.models.assignment import AssignmentModel
                     from sqlalchemy import func as sa_func, select as sa_select
-                    stmt = (
+
+                    # Count distinct blocked accounts
+                    blocked_stmt = (
                         sa_select(sa_func.count(sa_func.distinct(AssignmentModel.account_id)))
                         .where(
                             AssignmentModel.channel_id == channel_id,
                             AssignmentModel.status == AssignmentStatus.BLOCKED,
                         )
                     )
-                    result = await session.execute(stmt)
-                    blocked_count = result.scalar() or 0
-                    if blocked_count >= 2:
+                    blocked_result = await session.execute(blocked_stmt)
+                    blocked_count = blocked_result.scalar() or 0
+
+                    # Check if anyone is still actively working on this channel
+                    active_stmt = (
+                        sa_select(sa_func.count())
+                        .select_from(AssignmentModel)
+                        .where(
+                            AssignmentModel.channel_id == channel_id,
+                            AssignmentModel.status == AssignmentStatus.ACTIVE,
+                        )
+                    )
+                    active_result = await session.execute(active_stmt)
+                    active_count = active_result.scalar() or 0
+
+                    if blocked_count >= 2 and active_count == 0:
                         await channel_repo.update_by_id(
                             channel_id, status=ChannelStatus.NO_ACCESS
                         )
                         log.info(
                             "channel_marked_no_access",
                             channel_id=str(channel_id)[:8],
-                            reason=f"access_denied by {blocked_count} accounts",
+                            reason=f"banned by {blocked_count} accounts: {reason[:80]}",
                         )
 
                 # Log event
