@@ -171,7 +171,7 @@ class DistributorService:
                         state={},
                     )
 
-                log.info(
+                log.debug(
                     "next_channel_assigned",
                     account_id=str(account_id)[:8],
                     channel=channel.display_name,

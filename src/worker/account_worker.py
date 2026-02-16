@@ -161,9 +161,9 @@ class AccountWorker:
         self.health_check_interval = settings.worker_health_check_interval
         self.repost_interval = settings.worker_repost_interval
 
-        # Logging context
+        # Logging context — short for debug, full phone for important logs
         self._log_ctx = {
-            "account": self.account_phone[:8] if self.account_phone else str(self.account_id)[:8],
+            "account": self.account_phone or str(self.account_id)[:8],
             "channel": self.channel_identifier,
             "campaign": self.campaign_name,
         }
@@ -180,7 +180,7 @@ class AccountWorker:
             name=f"worker-{self.account_phone}-{self.channel_identifier}",
         )
         self._task.add_done_callback(self._on_task_done)
-        log.info("account_worker_starting", **self._log_ctx)
+        log.debug("account_worker_starting", **self._log_ctx)
         return self._task
 
     async def stop(self) -> None:
@@ -193,7 +193,7 @@ class AccountWorker:
             except asyncio.CancelledError:
                 pass
         await self._disconnect()
-        log.info("account_worker_stopped", **self._log_ctx)
+        log.debug("account_worker_stopped", **self._log_ctx)
 
     def _on_task_done(self, task: asyncio.Task) -> None:
         """Callback when task finishes (normally or with exception)."""
@@ -215,11 +215,16 @@ class AccountWorker:
     async def _run(self) -> None:
         """Main worker loop with reconnection and error recovery."""
         try:
+            # Stagger start: random delay so workers don't all hit Telegram at once
+            stagger = random.uniform(2, 15)
+            await self._sleep(stagger)
+
             # Step 1: Connect
             await self._connect()
             self._reconnect_attempts = 0  # Reset on successful connect
 
             # Step 2: Join discussion group
+            await self._sleep(random.uniform(2, 5))
             await self._ensure_joined()
             await self._sleep(self.action_delay)
 
@@ -323,15 +328,12 @@ class AccountWorker:
                 )
 
         except ChannelNotFoundError as e:
-            # Channel doesn't exist or invite expired
-            # Already handled in _ensure_joined (on_banned called there),
-            # just log here if it somehow reaches from other place
-            log.warning("channel_not_found_in_run", error=str(e), **self._log_ctx)
+            # Already handled in _ensure_joined (on_banned called there)
+            log.debug("channel_not_found_in_run", error=str(e), **self._log_ctx)
 
         except ChannelAccessDeniedError as e:
-            # Already handled inside _ensure_joined (which calls on_banned),
-            # but catch stragglers from other places
-            log.warning("channel_error_in_run", error=str(e), **self._log_ctx)
+            # Already handled inside _ensure_joined (which calls on_banned)
+            log.debug("channel_error_in_run", error=str(e), **self._log_ctx)
 
         except Exception as e:
             log.error(
@@ -551,7 +553,7 @@ class AccountWorker:
                 raise AccountBannedError("Session is no longer authorized")
 
             me = await self.client.get_me()
-            log.info(
+            log.debug(
                 "account_connected",
                 telegram_id=me.id,
                 name=me.first_name,
@@ -617,14 +619,14 @@ class AccountWorker:
             # Join discussion group (needed for commenting)
             await join_channel(self.client, channel_id=info.discussion_group_id)
 
-            log.info(
+            log.debug(
                 "joined_channel_and_discussion",
                 discussion_group_id=info.discussion_group_id,
                 **self._log_ctx,
             )
 
         except ChannelAccessDeniedError:
-            log.warning("channel_access_denied_on_join", **self._log_ctx)
+            log.debug("channel_access_denied_on_join", **self._log_ctx)
             if self.on_banned:
                 await self.on_banned(
                     self.account_id, self.channel_id, self.assignment_id,
@@ -632,7 +634,7 @@ class AccountWorker:
                 )
             raise
         except ChannelNotFoundError:
-            log.warning("channel_not_found_on_join", **self._log_ctx)
+            log.debug("channel_not_found_on_join", **self._log_ctx)
             if self.on_banned:
                 await self.on_banned(
                     self.account_id, self.channel_id, self.assignment_id,
@@ -656,7 +658,7 @@ class AccountWorker:
 
         if result["name_copied"] or result["avatar_copied"]:
             self._profile_copied = True
-            log.info(
+            log.debug(
                 "profile_copied",
                 name_copied=result["name_copied"],
                 avatar_copied=result["avatar_copied"],

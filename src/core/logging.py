@@ -61,7 +61,7 @@ def setup_logging(level: str = "DEBUG", pretty: bool = True) -> None:
     )
 
     # Silence noisy libraries
-    logging.getLogger("telethon").setLevel(logging.WARNING)
+    logging.getLogger("telethon").setLevel(logging.ERROR)
     logging.getLogger("aiogram").setLevel(logging.INFO)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     logging.getLogger("asyncpg").setLevel(logging.WARNING)

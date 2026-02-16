@@ -425,7 +425,7 @@ class WorkerManager:
         self._workers[assignment.id] = worker
         self._tasks[assignment.id] = task
 
-        log.info(
+        log.debug(
             "worker_started",
             assignment_id=str(assignment.id)[:8],
             account=account.display_name,
@@ -465,7 +465,7 @@ class WorkerManager:
         3. Try to assign next free channel (rotation)
         4. Notify owner
         """
-        log.warning(
+        log.debug(
             "worker_banned_callback",
             account_id=str(account_id)[:8],
             channel_id=str(channel_id)[:8],
@@ -502,6 +502,29 @@ class WorkerManager:
                         channel_id=str(channel_id)[:8],
                         reason=reason,
                     )
+                elif "access_denied" in reason:
+                    # If multiple accounts can't join the same channel,
+                    # it's likely a channel-level problem (private/deleted)
+                    from src.db.models.assignment import AssignmentModel
+                    from sqlalchemy import func as sa_func, select as sa_select
+                    stmt = (
+                        sa_select(sa_func.count(sa_func.distinct(AssignmentModel.account_id)))
+                        .where(
+                            AssignmentModel.channel_id == channel_id,
+                            AssignmentModel.status == AssignmentStatus.BLOCKED,
+                        )
+                    )
+                    result = await session.execute(stmt)
+                    blocked_count = result.scalar() or 0
+                    if blocked_count >= 2:
+                        await channel_repo.update_by_id(
+                            channel_id, status=ChannelStatus.NO_ACCESS
+                        )
+                        log.info(
+                            "channel_marked_no_access",
+                            channel_id=str(channel_id)[:8],
+                            reason=f"access_denied by {blocked_count} accounts",
+                        )
 
                 # Log event
                 assignment = await assign_repo.get_by_id(assignment_id)
@@ -653,7 +676,7 @@ class WorkerManager:
         error: str = "",
     ) -> None:
         """Handle worker error."""
-        log.error(
+        log.debug(
             "worker_error_callback",
             account_id=str(account_id)[:8],
             error=error,
@@ -675,6 +698,8 @@ class WorkerManager:
                     "comments_disabled",
                     "invite_hash_expired",
                     "channel_not_found",
+                    "channel is private",
+                    "cannot cast inputpeeruser",
                 )
                 if any(e in error.lower() for e in channel_level_errors):
                     # This is a channel problem, not account — mark NO_ACCESS immediately
