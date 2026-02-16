@@ -305,19 +305,31 @@ class WorkerManager:
                     if not idle_account_ids:
                         continue
 
-                    # Filter: only accounts that are still active (not errored/disabled)
-                    account_repo = AccountRepository(session)
-                    for account_id in idle_account_ids:
-                        account = await account_repo.get_by_id(account_id)
-                        if not account or not account.is_available:
-                            continue
+                    # Filter out accounts that already have a worker running
+                    running_account_ids = {
+                        w.account_id for w in self._workers.values()
+                    }
+                    idle_account_ids = [
+                        aid for aid in idle_account_ids
+                        if aid not in running_account_ids
+                    ]
 
-                        # Skip if already has a worker running
-                        has_worker = any(
-                            w.account_id == account_id
-                            for w in self._workers.values()
-                        )
-                        if has_worker:
+                    if not idle_account_ids:
+                        continue
+
+                    # Batch-load accounts to avoid N+1 queries
+                    from src.db.models.account import AccountModel
+                    acct_stmt = select(AccountModel).where(
+                        AccountModel.id.in_(idle_account_ids)
+                    )
+                    acct_result = await session.execute(acct_stmt)
+                    accounts_map = {
+                        a.id: a for a in acct_result.scalars().all()
+                    }
+
+                    for account_id in idle_account_ids:
+                        account = accounts_map.get(account_id)
+                        if not account or not account.is_available:
                             continue
 
                         # Try to assign a free channel

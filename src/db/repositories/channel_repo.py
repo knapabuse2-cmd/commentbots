@@ -53,10 +53,13 @@ class ChannelRepository(BaseRepository[ChannelModel]):
         This is the core query for channel rotation:
         when an account needs a new channel, find one that's free.
         """
-        # Subquery: channels that have active assignments
+        # Subquery: channels that have active assignments in THIS campaign
         occupied_subq = (
             select(AssignmentModel.channel_id)
-            .where(AssignmentModel.status == AssignmentStatus.ACTIVE)
+            .where(
+                AssignmentModel.campaign_id == campaign_id,
+                AssignmentModel.status == AssignmentStatus.ACTIVE,
+            )
             .subquery()
         )
 
