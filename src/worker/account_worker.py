@@ -60,6 +60,9 @@ log = get_logger(__name__)
 # Max consecutive FloodWait retries before giving up
 MAX_FLOOD_RETRIES = 5
 
+# Max reposts on the same channel before rotating to next one
+MAX_REPOSTS_PER_CHANNEL = 2
+
 # Max reconnection attempts before marking account as errored
 MAX_RECONNECT_ATTEMPTS = 3
 
@@ -363,6 +366,7 @@ class AccountWorker:
         """
         last_health_check = datetime.now(timezone.utc)
         discussion_rejoin_attempts = 0
+        repost_count = 0
 
         while self._running:
             # -- HEALTH CHECK --
@@ -543,6 +547,7 @@ class AccountWorker:
                     self._current_comment_id = result.message_id
                     self._current_post_id = target_post_id
                     self._flood_retries = 0  # Reset flood counter on success
+                    repost_count += 1
 
                     if self.on_comment_reposted:
                         await self.on_comment_reposted(
@@ -556,8 +561,23 @@ class AccountWorker:
                         "comment_reposted",
                         comment_id=result.message_id,
                         post_id=target_post_id,
+                        repost_count=repost_count,
                         **self._log_ctx,
                     )
+
+                    # After MAX_REPOSTS_PER_CHANNEL, rotate to next channel
+                    if repost_count >= MAX_REPOSTS_PER_CHANNEL:
+                        log.info(
+                            "max_reposts_reached_rotating",
+                            repost_count=repost_count,
+                            **self._log_ctx,
+                        )
+                        if self.on_banned:
+                            await self.on_banned(
+                                self.account_id, self.channel_id, self.assignment_id,
+                                reason="max_reposts_reached",
+                            )
+                        return
                 else:
                     log.warning(
                         "repost_failed",

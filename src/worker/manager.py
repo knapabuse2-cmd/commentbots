@@ -495,6 +495,26 @@ class WorkerManager:
                 event_repo = EventLogRepository(session)
                 campaign_repo = CampaignRepository(session)
 
+                # Normal channel rotation after max reposts — not a ban
+                if "max_reposts_reached" in reason:
+                    await assign_repo.mark_completed(assignment_id)
+
+                    # Assign next free channel
+                    assignment = await assign_repo.get_by_id(assignment_id)
+                    if assignment:
+                        campaign = await campaign_repo.get_by_id(assignment.campaign_id)
+                        if campaign:
+                            distributor = DistributorService(session)
+                            try:
+                                await distributor.assign_next_channel(
+                                    campaign.id, account_id
+                                )
+                            except Exception:
+                                pass
+
+                    await session.commit()
+                    return
+
                 # Mark assignment as blocked
                 await assign_repo.mark_blocked(assignment_id)
 

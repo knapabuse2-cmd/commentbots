@@ -381,6 +381,49 @@ async def add_channels_receive(
     ch_svc = ChannelService(session)
     added, skipped, errors = await ch_svc.add_channels_bulk(campaign_id, links_text, owner_id=owner_id)
 
+    # Get actual campaign status for the keyboard
+    campaign = await CampaignService(session).get_campaign(campaign_id, owner_id=owner_id)
+    campaign_status = campaign.status.value if campaign else "draft"
+
+    # If campaign is active and channels were added, distribute to idle accounts
+    if added > 0 and campaign_status == "active":
+        from src.services.distributor import DistributorService
+        distributor = DistributorService(session)
+
+        # Find idle accounts (have assignments but no active one)
+        from src.db.repositories.assignment_repo import AssignmentRepository
+        from src.db.models.assignment import AssignmentStatus
+        from sqlalchemy import select
+        from src.db.models.assignment import AssignmentModel
+
+        active_subq = (
+            select(AssignmentModel.account_id)
+            .where(
+                AssignmentModel.campaign_id == campaign_id,
+                AssignmentModel.status == AssignmentStatus.ACTIVE,
+            )
+            .subquery()
+        )
+        idle_stmt = (
+            select(AssignmentModel.account_id)
+            .where(
+                AssignmentModel.campaign_id == campaign_id,
+                AssignmentModel.account_id.notin_(select(active_subq)),
+            )
+            .distinct()
+        )
+        idle_result = await session.execute(idle_stmt)
+        idle_ids = [row[0] for row in idle_result.all()]
+
+        distributed = 0
+        for account_id in idle_ids:
+            try:
+                new_assign = await distributor.assign_next_channel(campaign_id, account_id)
+                if new_assign:
+                    distributed += 1
+            except Exception:
+                pass
+
     await state.clear()
 
     result_text = f"\u2705 \u0414\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043e: <b>{added}</b>"
@@ -391,10 +434,12 @@ async def add_channels_receive(
         result_text += f"\n\u274c \u041e\u0448\u0438\u0431\u043a\u0438:\n<code>{err_preview}</code>"
         if len(errors) > 5:
             result_text += f"\n... \u0438 \u0435\u0449\u0451 {len(errors) - 5}"
+    if added > 0 and campaign_status == "active" and distributed > 0:
+        result_text += f"\n\n\U0001f504 \u0420\u0430\u0441\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u043e idle \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u043e\u0432: {distributed}"
 
     await message.answer(
         result_text,
-        reply_markup=campaign_detail_keyboard(campaign_id, "draft"),
+        reply_markup=campaign_detail_keyboard(campaign_id, campaign_status),
         parse_mode="HTML",
     )
 
