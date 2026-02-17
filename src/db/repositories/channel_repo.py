@@ -137,12 +137,6 @@ class ChannelRepository(BaseRepository[ChannelModel]):
             if not link:
                 continue
 
-            # Check duplicate
-            existing = await self.find_by_link(campaign_id, link)
-            if existing is not None:
-                skipped += 1
-                continue
-
             username, invite_hash = ChannelModel.parse_link(link)
             await self.create(
                 campaign_id=campaign_id,

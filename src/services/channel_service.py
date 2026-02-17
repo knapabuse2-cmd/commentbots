@@ -60,11 +60,6 @@ class ChannelService:
         if not username and not invite_hash:
             return None, f"Cannot parse channel link: {link}"
 
-        # Check duplicate
-        existing = await self.repo.find_by_link(campaign_id, link)
-        if existing:
-            return None, f"Channel already exists in campaign: {existing.display_name}"
-
         channel = await self.repo.create(
             campaign_id=campaign_id,
             link=link,
