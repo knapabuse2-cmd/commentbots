@@ -101,29 +101,34 @@ async def add_phone_receive(
 
     svc = AccountService(session)
 
+    # Send immediate feedback — Telegram auth can take 10-30 seconds
+    wait_msg = await message.answer(
+        "⏳ Отправляю код авторизации…",
+    )
+
     try:
         account_id, phone_code_hash = await svc.start_auth(owner_id, phone)
 
         await state.update_data(account_id=str(account_id), phone=phone)
         await state.set_state(AccountStates.waiting_code)
 
-        await message.answer(
-            f"\U0001f4e9 \u041a\u043e\u0434 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d \u043d\u0430 <code>{phone}</code>\n"  # 📩 Код отправлен на ...
-            "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043a\u043e\u0434 \u0438\u0437 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f:",  # Введите код из сообщения:
+        await wait_msg.edit_text(
+            f"📩 Код отправлен на <code>{phone}</code>\n"
+            "Введите код из сообщения:",
             reply_markup=cancel_keyboard(),
             parse_mode="HTML",
         )
 
     except AccountAuthError as e:
-        await message.answer(f"\u274c {e.message}", reply_markup=cancel_keyboard())  # ❌
+        await wait_msg.edit_text(f"❌ {e.message}", reply_markup=cancel_keyboard())
         await state.clear()
     except AccountBannedError as e:
-        await message.answer(f"\U0001f6ab {e.message}", reply_markup=cancel_keyboard())  # 🚫
+        await wait_msg.edit_text(f"🚫 {e.message}", reply_markup=cancel_keyboard())
         await state.clear()
     except AccountFloodWaitError as e:
-        await message.answer(
-            f"\u23f3 Telegram \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u0435. "  # ⏳ Telegram ограничение.
-            f"\u041f\u043e\u0434\u043e\u0436\u0434\u0438\u0442\u0435 {e.seconds} \u0441\u0435\u043a.",  # Подождите N сек.
+        await wait_msg.edit_text(
+            f"⏳ Telegram ограничение. "
+            f"Подождите {e.seconds} сек.",
             reply_markup=cancel_keyboard(),
         )
         await state.clear()
