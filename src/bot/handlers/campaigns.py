@@ -10,6 +10,7 @@ Flows:
 6. Start / Pause / Delete
 """
 
+import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -32,11 +33,18 @@ from src.core.exceptions import CampaignError, OwnershipError
 from src.core.logging import get_logger
 from src.db.models.account import AccountStatus
 from src.db.models.assignment import AssignmentStatus
+from src.db.models.channel import ChannelStatus
 from src.db.repositories.account_repo import AccountRepository
 from src.db.repositories.assignment_repo import AssignmentRepository
+from src.db.repositories.channel_repo import ChannelRepository
 from src.services.campaign_service import CampaignService
 from src.services.channel_service import ChannelService
 from src.services.distributor import DistributorService
+from src.telegram.client import (
+    check_channel_alive,
+    create_client,
+    decrypt_session,
+)
 
 log = get_logger(__name__)
 
@@ -991,3 +999,163 @@ async def delete_campaign(
         return
 
     await callback.answer()
+
+
+# ============================================================
+# Check channels (validate links are still alive)
+# ============================================================
+
+
+@router.callback_query(F.data.startswith("camp:check_channels:"))
+async def check_channels(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    owner_id: uuid.UUID,
+) -> None:
+    """Check all campaign channels — resolve each via Telethon."""
+    campaign_id = uuid.UUID(callback.data.split(":")[-1])
+
+    # Get first active account with session_data to use as probe
+    account_repo = AccountRepository(session)
+    accounts = await account_repo.get_by_owner(owner_id, status=AccountStatus.ACTIVE)
+    probe_account = None
+    for acc in accounts:
+        if acc.session_data:
+            probe_account = acc
+            break
+
+    if not probe_account:
+        await callback.answer(
+            "❌ Нет активных аккаунтов для проверки", show_alert=True
+        )
+        return
+
+    # Get all channels for campaign
+    channel_repo = ChannelRepository(session)
+    channels = await channel_repo.get_by_campaign(campaign_id, limit=10000)
+
+    if not channels:
+        await callback.answer("❌ Нет каналов", show_alert=True)
+        return
+
+    total = len(channels)
+    await callback.answer()
+    status_msg = await callback.message.edit_text(
+        f"🔍 Проверяю {total} каналов…\n"
+        f"Это может занять некоторое время."
+    )
+
+    # Connect Telethon client
+    try:
+        session_str = decrypt_session(probe_account.session_data)
+    except Exception:
+        await status_msg.edit_text(
+            "❌ Ошибка расшифровки сессии аккаунта",
+            reply_markup=campaign_detail_keyboard(campaign_id, "draft"),
+        )
+        return
+
+    proxy = None
+    if probe_account.proxy_id:
+        acc_with_proxy = await account_repo.get_with_proxy(probe_account.id)
+        if acc_with_proxy and acc_with_proxy.proxy:
+            p = acc_with_proxy.proxy
+            proxy = {
+                "host": p.host,
+                "port": p.port,
+                "username": p.username,
+                "password": p.password,
+            }
+
+    client = create_client(session_string=session_str, proxy=proxy)
+
+    alive_count = 0
+    dead_count = 0
+    dead_channels: list[str] = []
+    flood_hit = False
+
+    try:
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            await status_msg.edit_text(
+                "❌ Сессия аккаунта истекла",
+                reply_markup=campaign_detail_keyboard(campaign_id, "draft"),
+            )
+            return
+
+        for i, ch in enumerate(channels):
+            alive, reason = await check_channel_alive(
+                client, username=ch.username, invite_hash=ch.invite_hash,
+            )
+
+            if alive:
+                if ch.status != ChannelStatus.ACTIVE:
+                    ch.status = ChannelStatus.ACTIVE
+                alive_count += 1
+            else:
+                if "flood_wait" in reason:
+                    # Rate-limited — stop checking, keep remaining as-is
+                    flood_hit = True
+                    alive_count += 1  # channel exists though
+                    break
+                ch.status = ChannelStatus.NO_ACCESS
+                dead_count += 1
+                dead_channels.append(f"{ch.display_name} ({reason})")
+
+            # Progress update every 20 channels
+            if (i + 1) % 20 == 0:
+                try:
+                    await status_msg.edit_text(
+                        f"🔍 Проверяю каналы… {i + 1}/{total}\n"
+                        f"✅ {alive_count} живых, ❌ {dead_count} мёртвых"
+                    )
+                except Exception:
+                    pass  # message edit rate limit
+
+            await asyncio.sleep(0.5)  # rate limit protection
+
+        await session.flush()
+
+    except Exception as e:
+        log.error("check_channels_error", error=str(e))
+        await status_msg.edit_text(
+            f"❌ Ошибка при проверке: {e}",
+            reply_markup=campaign_detail_keyboard(campaign_id, "draft"),
+        )
+        return
+    finally:
+        await client.disconnect()
+
+    # Build result message
+    remaining = total - alive_count - dead_count
+    text = (
+        f"🔍 <b>Проверка каналов завершена</b>\n\n"
+        f"📺 Всего: {total}\n"
+        f"✅ Живых: {alive_count}\n"
+        f"❌ Мёртвых: {dead_count}\n"
+    )
+
+    if remaining > 0:
+        text += f"⏳ Не проверено: {remaining}\n"
+
+    if flood_hit:
+        text += "\n⚠️ Проверка прервана из-за FloodWait от Telegram\n"
+
+    if dead_channels:
+        dead_list = "\n".join(dead_channels[:30])  # show max 30
+        text += f"\n<b>Мёртвые каналы:</b>\n<code>{dead_list}</code>"
+        if len(dead_channels) > 30:
+            text += f"\n… и ещё {len(dead_channels) - 30}"
+
+    # Get campaign status for keyboard
+    campaign = await CampaignService(session).get_campaign(
+        campaign_id, owner_id=owner_id
+    )
+    camp_status = campaign.status.value if campaign else "draft"
+
+    await status_msg.edit_text(
+        text,
+        reply_markup=campaign_detail_keyboard(campaign_id, camp_status),
+        parse_mode="HTML",
+    )

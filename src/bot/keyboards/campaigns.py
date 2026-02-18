@@ -99,6 +99,12 @@ def campaign_detail_keyboard(
             callback_data=f"camp:add_channels:{cid}",
         ),
     ])
+    buttons.append([
+        InlineKeyboardButton(
+            text="\U0001f50d \u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u043a\u0430\u043d\u0430\u043b\u044b",  # 🔍 Проверить каналы
+            callback_data=f"camp:check_channels:{cid}",
+        ),
+    ])
 
     # Accounts
     buttons.append([

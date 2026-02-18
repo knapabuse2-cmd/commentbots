@@ -321,6 +321,43 @@ async def get_channel_info(
         )
 
 
+async def check_channel_alive(
+    client: TelegramClient,
+    *,
+    username: str | None = None,
+    invite_hash: str | None = None,
+) -> tuple[bool, str]:
+    """
+    Check if a channel is still accessible.
+
+    Returns:
+        (alive, reason) — True if channel is reachable, else False + reason.
+    """
+    try:
+        if username:
+            await client.get_entity(username)
+        elif invite_hash:
+            # For invite links, try to get info without joining
+            from telethon.tl.functions.messages import CheckChatInviteRequest
+            await client(CheckChatInviteRequest(invite_hash))
+        else:
+            return False, "no_identifier"
+        return True, "ok"
+    except InviteHashExpiredError:
+        return False, "invite_expired"
+    except ChannelPrivateError:
+        return False, "channel_private"
+    except (ValueError, TypeError) as e:
+        err = str(e).lower()
+        if "no user has" in err or "nobody" in err or "unacceptable" in err:
+            return False, "dead_username"
+        return False, f"resolve_error: {e}"
+    except FloodWaitError as e:
+        return True, f"flood_wait_{e.seconds}"  # channel exists, we're just rate-limited
+    except Exception as e:
+        return False, f"error: {e}"
+
+
 async def join_channel(
     client: TelegramClient,
     *,
